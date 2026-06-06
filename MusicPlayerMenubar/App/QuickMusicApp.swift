@@ -21,10 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var cancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: 28)
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Music")
+            button.imagePosition = .imageOnly
             button.action = #selector(togglePopover)
             button.target = self
         }
