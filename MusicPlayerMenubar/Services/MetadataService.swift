@@ -1,6 +1,5 @@
 import Foundation
 import AVFoundation
-import AppKit
 
 struct MetadataService {
 
@@ -10,7 +9,6 @@ struct MetadataService {
         var artist = "Unknown Artist"
         var album = "Unknown Album"
         var duration: Double = 0
-        var artwork: NSImage?
 
         do {
             let metadata = try await asset.load(.metadata)
@@ -33,10 +31,6 @@ struct MetadataService {
                     if let value = try await item.load(.stringValue) {
                         album = value
                     }
-                case .commonKeyArtwork:
-                    if let data = try await item.load(.dataValue) {
-                        artwork = NSImage(data: data)
-                    }
                 default:
                     break
                 }
@@ -54,8 +48,7 @@ struct MetadataService {
             title: title,
             artist: artist,
             album: album,
-            duration: duration,
-            artwork: artwork
+            duration: duration
         )
     }
 }

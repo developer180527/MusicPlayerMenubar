@@ -4,6 +4,7 @@ struct MusicMenuView: View {
 
     @EnvironmentObject var library: MusicLibraryService
     @EnvironmentObject var player: AudioPlayerService
+    @ObservedObject private var artworkCache = ArtworkCache.shared
 
     @State private var searchText = ""
     @State private var isHoveringVolume = false
@@ -28,7 +29,7 @@ struct MusicMenuView: View {
             Divider()
             bottomBar
         }
-        .frame(width: 340, height: 480)
+        .frame(width: 340, height: 580)
     }
 
     // MARK: - Now Playing
@@ -36,10 +37,7 @@ struct MusicMenuView: View {
     private var nowPlayingSection: some View {
         VStack(spacing: 10) {
             HStack(spacing: 14) {
-                artworkView(
-                    image: player.currentTrack?.artwork,
-                    size: 56
-                )
+                artworkView(for: player.currentTrack, size: 56)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(player.currentTrack?.title ?? "No Track Selected")
@@ -64,7 +62,6 @@ struct MusicMenuView: View {
             }
 
             progressSection
-
             controlsRow
         }
         .padding(.horizontal, 16)
@@ -258,7 +255,7 @@ struct MusicMenuView: View {
                 player.play(track: track, playlist: filteredTracks)
             } label: {
                 HStack(spacing: 10) {
-                    artworkView(image: track.artwork, size: 36)
+                    artworkView(for: track, size: 36)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(track.title)
@@ -349,9 +346,9 @@ struct MusicMenuView: View {
 
     // MARK: - Helpers
 
-    private func artworkView(image: NSImage?, size: CGFloat) -> some View {
+    private func artworkView(for track: Track?, size: CGFloat) -> some View {
         Group {
-            if let image {
+            if let track, let image = artworkCache.thumbnail(for: track, size: size) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

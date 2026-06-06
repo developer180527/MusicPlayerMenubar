@@ -1,22 +1,20 @@
 import Foundation
-import AppKit
 
-struct Track: Identifiable, Hashable {
+struct Track: Identifiable, Hashable, Codable {
 
-    let id = UUID()
+    var id: String { url.absoluteString }
     let url: URL
 
     var title: String
     var artist: String
     var album: String
     var duration: Double
-    var artwork: NSImage?
 
     static func == (lhs: Track, rhs: Track) -> Bool {
-        lhs.id == rhs.id
+        lhs.url == rhs.url
     }
 
     func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
+        hasher.combine(url)
     }
 }
