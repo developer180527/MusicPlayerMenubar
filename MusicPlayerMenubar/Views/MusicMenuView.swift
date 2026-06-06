@@ -7,6 +7,7 @@ struct MusicMenuView: View {
 
     @State private var searchText = ""
     @State private var isHoveringVolume = false
+    @State private var seekValue: Double?
 
     var filteredTracks: [Track] {
         if searchText.isEmpty {
@@ -74,14 +75,24 @@ struct MusicMenuView: View {
         VStack(spacing: 2) {
             Slider(
                 value: Binding(
-                    get: { player.progress },
-                    set: { player.seek(to: $0) }
-                )
+                    get: { seekValue ?? player.progress },
+                    set: { seekValue = $0 }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    player.isSeeking = editing
+                    if !editing, let value = seekValue {
+                        player.seek(to: value)
+                        seekValue = nil
+                    }
+                }
             )
             .controlSize(.mini)
 
             HStack {
-                Text(AudioPlayerService.formatTime(player.currentTime))
+                Text(AudioPlayerService.formatTime(
+                    seekValue != nil ? (seekValue! * player.duration) : player.currentTime
+                ))
                     .font(.system(size: 10, design: .monospaced))
                 Spacer()
                 Text(AudioPlayerService.formatTime(player.duration))
@@ -242,41 +253,58 @@ struct MusicMenuView: View {
     }
 
     private func trackRow(_ track: Track) -> some View {
-        Button {
-            player.play(track: track, playlist: filteredTracks)
-        } label: {
-            HStack(spacing: 10) {
-                artworkView(image: track.artwork, size: 36)
+        HStack(spacing: 0) {
+            Button {
+                player.play(track: track, playlist: filteredTracks)
+            } label: {
+                HStack(spacing: 10) {
+                    artworkView(image: track.artwork, size: 36)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(track.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                    Text(track.artist)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(track.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        Text(track.artist)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    if track.duration > 0 {
+                        Text(AudioPlayerService.formatTime(track.duration))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if player.currentTrack?.id == track.id {
+                        Image(systemName: player.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
-
-                Spacer()
-
-                if track.duration > 0 {
-                    Text(AudioPlayerService.formatTime(track.duration))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-
-                if player.currentTrack?.id == track.id {
-                    Image(systemName: player.isPlaying ? "speaker.wave.2.fill" : "speaker.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color.accentColor)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            Button {
+                library.removeTrack(track)
+                if player.currentTrack?.id == track.id {
+                    player.stop()
+                }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Remove from library")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(
             player.currentTrack?.id == track.id
             ? Color.accentColor.opacity(0.08)

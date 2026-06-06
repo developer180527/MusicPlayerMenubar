@@ -34,6 +34,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
     @Published var duration: Double = 0
     @Published var volume: Float = 0.7
     @Published var loopMode: LoopMode = .off
+    var isSeeking = false
 
     var player: AVAudioPlayer?
     private var timer: Timer?
@@ -91,8 +92,10 @@ final class AudioPlayerService: NSObject, ObservableObject {
 
     func seek(to progress: Double) {
         guard let player else { return }
-        player.currentTime = player.duration * progress
-        self.currentTime = player.currentTime
+        let targetTime = player.duration * progress
+        player.currentTime = targetTime
+        self.progress = progress
+        self.currentTime = targetTime
     }
 
     func setVolume(_ newVolume: Float) {
@@ -145,7 +148,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let player = self.player else { return }
-                if player.duration > 0 {
+                if player.duration > 0 && !self.isSeeking {
                     self.progress = player.currentTime / player.duration
                     self.currentTime = player.currentTime
                 }

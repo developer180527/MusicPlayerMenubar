@@ -87,6 +87,10 @@ final class MusicLibraryService: ObservableObject {
         }
     }
 
+    func removeTrack(_ track: Track) {
+        tracks.removeAll { $0.id == track.id }
+    }
+
     private func collectFiles(in folder: URL, into results: inout [URL]) {
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
