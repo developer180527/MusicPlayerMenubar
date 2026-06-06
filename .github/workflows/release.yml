@@ -1,0 +1,71 @@
+name: Build & Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build Universal DMG
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            XCODE_PATH="/Applications/Xcode.app"
+          fi
+          echo "Using: $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build Universal Binary (ARM + Intel)
+        run: |
+          xcodebuild -scheme MusicPlayerMenubar \
+            -configuration Release \
+            -derivedDataPath build \
+            -arch arm64 -arch x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Verify Universal Binary
+        run: |
+          APP="build/Build/Products/Release/MusicPlayerMenubar.app"
+          echo "Architectures:"
+          lipo -info "$APP/Contents/MacOS/MusicPlayerMenubar"
+
+      - name: Create DMG
+        run: |
+          APP="build/Build/Products/Release/MusicPlayerMenubar.app"
+          TAG="${{ github.event.release.tag_name }}"
+          DMG_NAME="MusicPlayerMenubar-${TAG}-universal.dmg"
+
+          mkdir -p dmg_stage
+          cp -R "$APP" dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+
+          hdiutil create \
+            -volname "MusicPlayerMenubar" \
+            -srcfolder dmg_stage \
+            -ov -format UDZO \
+            "$DMG_NAME"
+
+          echo "DMG_NAME=$DMG_NAME" >> $GITHUB_ENV
+
+      - name: Upload DMG to Release
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ env.DMG_NAME }}" \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
