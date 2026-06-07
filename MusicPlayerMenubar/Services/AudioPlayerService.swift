@@ -34,13 +34,21 @@ final class AudioPlayerService: NSObject, ObservableObject {
     @Published var duration: Double = 0
     @Published var volume: Float = 0.7
     @Published var loopMode: LoopMode = .off
+    @Published var playbackError: String?
     var isSeeking = false
 
-    var player: AVAudioPlayer?
+    private var player: AVAudioPlayer?
     private var timer: Timer?
     private var playlist: [Track] = []
 
     func play(track: Track, playlist: [Track] = []) {
+        playbackError = nil
+
+        guard (try? track.url.checkResourceIsReachable()) == true else {
+            showError("File not found: \(track.title)")
+            return
+        }
+
         do {
             player = try AVAudioPlayer(contentsOf: track.url)
             player?.delegate = self
@@ -57,7 +65,17 @@ final class AudioPlayerService: NSObject, ObservableObject {
 
             startTimer()
         } catch {
-            print("Playback error: \(error.localizedDescription)")
+            showError("Can't play: \(track.title)")
+        }
+    }
+
+    private func showError(_ message: String) {
+        playbackError = message
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if playbackError == message {
+                playbackError = nil
+            }
         }
     }
 

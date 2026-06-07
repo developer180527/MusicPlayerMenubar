@@ -8,9 +8,10 @@ final class MusicLibraryService: ObservableObject {
 
     @Published var tracks: [Track] = []
     @Published var isScanning = false
+    @Published var statusMessage: String?
 
     private let supportedExtensions: Set<String> = [
-        "mp3", "m4a", "aac", "wav", "flac", "aiff", "alac", "wma", "ogg"
+        "mp3", "m4a", "aac", "wav", "flac", "aiff", "alac"
     ]
 
     private static var storageURL: URL {
@@ -30,9 +31,13 @@ final class MusicLibraryService: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode([Track].self, from: data)
-            // Filter out tracks whose files no longer exist
-            tracks = decoded.filter { FileManager.default.fileExists(atPath: $0.url.path) }
-            if tracks.count != decoded.count { save() }
+            let valid = decoded.filter { (try? $0.url.checkResourceIsReachable()) == true }
+            let removedCount = decoded.count - valid.count
+            tracks = valid
+            if removedCount > 0 {
+                save()
+                showStatus("\(removedCount) track\(removedCount == 1 ? "" : "s") removed — files not found")
+            }
         } catch {
             print("Failed to load library: \(error.localizedDescription)")
         }
@@ -62,32 +67,69 @@ final class MusicLibraryService: ObservableObject {
 
         guard panel.runModal() == .OK else { return }
 
-        var fileURLs: [URL] = []
-        for url in panel.urls {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                collectFiles(in: url, into: &fileURLs)
-            } else if isSupportedFile(url) {
-                fileURLs.append(url)
-            }
-        }
-
+        let selectedURLs = panel.urls
         let existingURLs = Set(tracks.map { $0.url })
-        let newURLs = fileURLs.filter { !existingURLs.contains($0) }
-
-        guard !newURLs.isEmpty else { return }
+        let extensions = supportedExtensions
 
         isScanning = true
+
         Task {
-            var loaded: [Track] = []
-            for url in newURLs {
-                let track = await MetadataService.extractMetadata(from: url)
-                loaded.append(track)
+            // File collection — off main thread
+            let fileURLs = await Task.detached(priority: .userInitiated) {
+                () -> [URL] in
+                var results: [URL] = []
+                for url in selectedURLs {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+                       isDir.boolValue {
+                        guard let enumerator = FileManager.default.enumerator(
+                            at: url,
+                            includingPropertiesForKeys: [.isRegularFileKey],
+                            options: [.skipsHiddenFiles]
+                        ) else { continue }
+                        for case let fileURL as URL in enumerator {
+                            if extensions.contains(fileURL.pathExtension.lowercased()) {
+                                results.append(fileURL)
+                            }
+                        }
+                    } else if extensions.contains(url.pathExtension.lowercased()) {
+                        results.append(url)
+                    }
+                }
+                return results
+            }.value
+
+            let newURLs = fileURLs.filter { !existingURLs.contains($0) }
+
+            guard !newURLs.isEmpty else {
+                isScanning = false
+                return
             }
-            self.tracks.append(contentsOf: loaded)
-            self.tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            self.isScanning = false
-            self.save()
+
+            // Concurrent metadata extraction
+            let loaded = await withTaskGroup(
+                of: Track.self,
+                returning: [Track].self
+            ) { group in
+                for url in newURLs {
+                    group.addTask {
+                        await MetadataService.extractMetadata(from: url)
+                    }
+                }
+                var results: [Track] = []
+                for await track in group {
+                    results.append(track)
+                }
+                return results
+            }
+
+            tracks.append(contentsOf: loaded)
+            tracks.sort {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+            isScanning = false
+            save()
+            showStatus("Added \(loaded.count) track\(loaded.count == 1 ? "" : "s")")
         }
     }
 
@@ -98,23 +140,15 @@ final class MusicLibraryService: ObservableObject {
         save()
     }
 
-    // MARK: - Helpers
+    // MARK: - Status
 
-    private func collectFiles(in folder: URL, into results: inout [URL]) {
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        for case let fileURL as URL in enumerator {
-            if isSupportedFile(fileURL) {
-                results.append(fileURL)
+    private func showStatus(_ message: String) {
+        statusMessage = message
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if statusMessage == message {
+                statusMessage = nil
             }
         }
-    }
-
-    private func isSupportedFile(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
     }
 }

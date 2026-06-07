@@ -24,12 +24,34 @@ struct MusicMenuView: View {
     var body: some View {
         VStack(spacing: 0) {
             nowPlayingSection
+            statusBanner
             Divider()
             librarySection
             Divider()
             bottomBar
         }
         .frame(width: 340, height: 580)
+    }
+
+    @ViewBuilder
+    private var statusBanner: some View {
+        if let error = player.playbackError {
+            statusPill(error, color: .red)
+        } else if let message = library.statusMessage {
+            statusPill(message, color: .orange)
+        }
+    }
+
+    private func statusPill(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(color.opacity(0.85))
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.easeInOut(duration: 0.25), value: text)
     }
 
     // MARK: - Now Playing
