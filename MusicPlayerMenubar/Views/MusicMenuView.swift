@@ -331,6 +331,16 @@ struct MusicMenuView: View {
             Spacer()
 
             Button {
+                AppDelegate.shared.openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Settings")
+
+            Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Image(systemName: "power")
