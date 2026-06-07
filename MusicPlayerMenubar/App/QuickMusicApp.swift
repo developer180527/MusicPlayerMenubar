@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: 28)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Music")
+            button.image = Self.menubarIcon(playing: false)
             button.imagePosition = .imageOnly
             button.action = #selector(togglePopover)
             button.target = self
@@ -54,8 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         cancellable = player.$isPlaying.receive(on: RunLoop.main).sink { [weak self] isPlaying in
             guard let button = self?.statusItem.button else { return }
-            let name = isPlaying ? "waveform" : "music.note"
-            button.image = NSImage(systemSymbolName: name, accessibilityDescription: "Music")
+            button.image = Self.menubarIcon(playing: isPlaying)
         }
     }
 
@@ -67,6 +66,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    private static func menubarIcon(playing: Bool) -> NSImage? {
+        let name = playing ? "waveform" : "music.note"
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "Music")?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
+        return image
     }
 
     func openSettings() {

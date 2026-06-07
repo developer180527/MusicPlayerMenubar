@@ -85,7 +85,8 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     func resume() {
-        player?.play()
+        guard let player, currentTrack != nil else { return }
+        player.play()
         isPlaying = true
     }
 
