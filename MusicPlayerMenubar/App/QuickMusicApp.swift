@@ -71,9 +71,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private static func menubarIcon(playing: Bool) -> NSImage? {
         let name = playing ? "waveform" : "music.note"
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: "Music")?
-            .withSymbolConfiguration(config)
-        image?.isTemplate = true
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: "Music")?
+            .withSymbolConfiguration(config) else { return nil }
+
+        // Draw into a fixed-size canvas so both icons have identical bounds
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let symbolSize = symbol.size
+            let x = (rect.width - symbolSize.width) / 2
+            let y = (rect.height - symbolSize.height) / 2
+            symbol.draw(in: NSRect(x: x, y: y, width: symbolSize.width, height: symbolSize.height))
+            return true
+        }
+        image.isTemplate = true
         return image
     }
 
