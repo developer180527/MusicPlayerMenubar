@@ -9,6 +9,12 @@ final class MusicLibraryService: ObservableObject {
     @Published var tracks: [Track] = []
     @Published var isScanning = false
     @Published var statusMessage: String?
+    @Published var lastRemoved: RemovedTrackInfo?
+
+    struct RemovedTrackInfo {
+        let track: Track
+        let index: Int
+    }
 
     private let supportedExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "flac", "aiff", "alac"
@@ -66,19 +72,30 @@ final class MusicLibraryService: ObservableObject {
         panel.level = .floating
 
         guard panel.runModal() == .OK else { return }
+        importURLs(panel.urls)
+    }
 
-        let selectedURLs = panel.urls
+    func scanMusicFolder() {
+        let musicURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Music")
+        guard (try? musicURL.checkResourceIsReachable()) == true else {
+            showStatus("Music folder not found")
+            return
+        }
+        importURLs([musicURL])
+    }
+
+    private func importURLs(_ urls: [URL]) {
         let existingURLs = Set(tracks.map { $0.url })
         let extensions = supportedExtensions
 
         isScanning = true
 
         Task {
-            // File collection — off main thread
             let fileURLs = await Task.detached(priority: .userInitiated) {
                 () -> [URL] in
                 var results: [URL] = []
-                for url in selectedURLs {
+                for url in urls {
                     var isDir: ObjCBool = false
                     if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
                        isDir.boolValue {
@@ -103,10 +120,10 @@ final class MusicLibraryService: ObservableObject {
 
             guard !newURLs.isEmpty else {
                 isScanning = false
+                showStatus("No new tracks found")
                 return
             }
 
-            // Concurrent metadata extraction
             let loaded = await withTaskGroup(
                 of: Track.self,
                 returning: [Track].self
@@ -136,7 +153,32 @@ final class MusicLibraryService: ObservableObject {
     // MARK: - Remove
 
     func removeTrack(_ track: Track) {
-        tracks.removeAll { $0.id == track.id }
+        guard let index = tracks.firstIndex(where: { $0.id == track.id }) else { return }
+        let removed = tracks.remove(at: index)
+        lastRemoved = RemovedTrackInfo(track: removed, index: index)
+        save()
+
+        let removedID = removed.id
+        Task {
+            try? await Task.sleep(for: .seconds(8))
+            if lastRemoved?.track.id == removedID {
+                lastRemoved = nil
+            }
+        }
+    }
+
+    func undoRemove() {
+        guard let info = lastRemoved else { return }
+        let insertIndex = min(info.index, tracks.count)
+        tracks.insert(info.track, at: insertIndex)
+        lastRemoved = nil
+        save()
+        showStatus("Restored \"\(info.track.title)\"")
+    }
+
+    func clearLibrary() {
+        tracks.removeAll()
+        lastRemoved = nil
         save()
     }
 

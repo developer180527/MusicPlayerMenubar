@@ -97,10 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         let settingsView = SettingsView()
+            .environmentObject(library)
         let hostingView = NSHostingView(rootView: settingsView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 340),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

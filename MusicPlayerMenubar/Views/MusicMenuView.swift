@@ -9,15 +9,16 @@ struct MusicMenuView: View {
     @State private var searchText = ""
     @State private var isHoveringVolume = false
     @State private var seekValue: Double?
+    @State private var selectedTrackID: String?
 
     var filteredTracks: [Track] {
         if searchText.isEmpty {
             return library.tracks
         }
-        return library.tracks.filter {
-            $0.title.localizedCaseInsensitiveContains(searchText)
-            || $0.artist.localizedCaseInsensitiveContains(searchText)
-            || $0.album.localizedCaseInsensitiveContains(searchText)
+        return library.tracks.filter { track in
+            fuzzyMatch(searchText, in: track.title)
+            || fuzzyMatch(searchText, in: track.artist)
+            || fuzzyMatch(searchText, in: track.album)
         }
     }
 
@@ -31,12 +32,52 @@ struct MusicMenuView: View {
             bottomBar
         }
         .frame(width: 340, height: 580)
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.upArrow) {
+            moveSelection(by: -1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            moveSelection(by: 1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard selectedTrackID != nil else { return .ignored }
+            playSelectedTrack()
+            return .handled
+        }
+        .onKeyPress(keys: [.delete], phases: .down) { press in
+            guard press.modifiers.contains(.command),
+                  selectedTrackID != nil else { return .ignored }
+            removeSelectedTrack()
+            return .handled
+        }
     }
+
+    // MARK: - Status Banner
 
     @ViewBuilder
     private var statusBanner: some View {
         if let error = player.playbackError {
             statusPill(error, color: .red)
+        } else if let removed = library.lastRemoved {
+            HStack {
+                Text("Removed \"\(removed.track.title)\"")
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+                Button("Undo") {
+                    library.undoRemove()
+                }
+                .font(.system(size: 11, weight: .bold))
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(Color.orange.opacity(0.85))
         } else if let message = library.statusMessage {
             statusPill(message, color: .orange)
         }
@@ -211,6 +252,11 @@ struct MusicMenuView: View {
                 TextField("Search music...", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
+                    .onSubmit {
+                        if let track = filteredTracks.first {
+                            player.play(track: track, playlist: filteredTracks)
+                        }
+                    }
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -256,12 +302,22 @@ struct MusicMenuView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredTracks) { track in
-                            trackRow(track)
-                            if track.id != filteredTracks.last?.id {
-                                Divider().padding(.leading, 54)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filteredTracks) { track in
+                                trackRow(track)
+                                    .id(track.id)
+                                if track.id != filteredTracks.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: selectedTrackID) { _, newID in
+                        if let id = newID {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                proxy.scrollTo(id, anchor: .center)
                             }
                         }
                     }
@@ -324,11 +380,20 @@ struct MusicMenuView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(
-            player.currentTrack?.id == track.id
-            ? Color.accentColor.opacity(0.08)
-            : Color.clear
-        )
+        .background(trackBackground(track))
+    }
+
+    private func trackBackground(_ track: Track) -> Color {
+        let isSelected = selectedTrackID == track.id
+        let isPlaying = player.currentTrack?.id == track.id
+        if isSelected && isPlaying {
+            return Color.accentColor.opacity(0.15)
+        } else if isSelected {
+            return Color.secondary.opacity(0.12)
+        } else if isPlaying {
+            return Color.accentColor.opacity(0.08)
+        }
+        return Color.clear
     }
 
     // MARK: - Bottom Bar
@@ -374,6 +439,72 @@ struct MusicMenuView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    // MARK: - Keyboard Navigation
+
+    private func moveSelection(by offset: Int) {
+        let tracks = filteredTracks
+        guard !tracks.isEmpty else { return }
+
+        if let currentID = selectedTrackID,
+           let currentIndex = tracks.firstIndex(where: { $0.id == currentID }) {
+            let newIndex = max(0, min(tracks.count - 1, currentIndex + offset))
+            selectedTrackID = tracks[newIndex].id
+        } else {
+            selectedTrackID = offset > 0 ? tracks.first?.id : tracks.last?.id
+        }
+    }
+
+    private func playSelectedTrack() {
+        guard let id = selectedTrackID,
+              let track = filteredTracks.first(where: { $0.id == id })
+        else { return }
+        player.play(track: track, playlist: filteredTracks)
+    }
+
+    private func removeSelectedTrack() {
+        guard let id = selectedTrackID,
+              let track = filteredTracks.first(where: { $0.id == id })
+        else { return }
+
+        let tracks = filteredTracks
+        let nextID: String?
+        if let index = tracks.firstIndex(where: { $0.id == id }) {
+            if index + 1 < tracks.count {
+                nextID = tracks[index + 1].id
+            } else if index > 0 {
+                nextID = tracks[index - 1].id
+            } else {
+                nextID = nil
+            }
+        } else {
+            nextID = nil
+        }
+
+        if player.currentTrack?.id == track.id {
+            player.stop()
+        }
+        library.removeTrack(track)
+        selectedTrackID = nextID
+    }
+
+    // MARK: - Fuzzy Search
+
+    private func fuzzyMatch(_ query: String, in text: String) -> Bool {
+        let query = query.lowercased()
+        let text = text.lowercased()
+
+        if text.contains(query) { return true }
+
+        var queryIndex = query.startIndex
+        for char in text {
+            if queryIndex == query.endIndex { break }
+            if char == query[queryIndex] {
+                queryIndex = query.index(after: queryIndex)
+            }
+        }
+        return queryIndex == query.endIndex
     }
 
     // MARK: - Helpers

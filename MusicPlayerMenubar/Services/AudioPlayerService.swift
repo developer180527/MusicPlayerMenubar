@@ -328,7 +328,12 @@ extension AudioPlayerService: AVAudioPlayerDelegate {
             case .all:
                 playNext()
             case .off:
-                playNext()
+                let autoPlay = UserDefaults.standard.object(forKey: "autoPlayNext") as? Bool ?? true
+                if autoPlay {
+                    playNext()
+                } else {
+                    stop()
+                }
             }
         }
     }
