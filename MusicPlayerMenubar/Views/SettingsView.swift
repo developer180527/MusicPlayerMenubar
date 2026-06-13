@@ -45,22 +45,58 @@ struct SettingsView: View {
                     library.addFiles()
                 }
 
-                Button("Scan Music Folder") {
-                    library.scanMusicFolder()
-                }
-
-                Text("Imports all audio files from ~/Music.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 Button("Clear Library") {
                     showClearConfirmation = true
                 }
                 .foregroundStyle(.red)
             }
+
+            Section("Scan Folders") {
+                if library.customFolders.isEmpty {
+                    Text("No folders added. Add folders to quickly scan for music.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(library.customFolders, id: \.self) { folder in
+                        HStack(spacing: 8) {
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(.secondary)
+                                .font(.system(size: 12))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(folder.lastPathComponent)
+                                    .font(.system(size: 13))
+                                    .lineLimit(1)
+                                Text(folder.path)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button {
+                                library.removeCustomFolder(folder)
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack {
+                    Button("Add Folder...") {
+                        library.addCustomFolder()
+                    }
+                    Spacer()
+                    Button("Scan All") {
+                        library.scanCustomFolders()
+                    }
+                    .disabled(library.customFolders.isEmpty)
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 380, height: 340)
+        .frame(width: 380, height: 460)
         .alert("Clear Library?", isPresented: $showClearConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Clear All", role: .destructive) {

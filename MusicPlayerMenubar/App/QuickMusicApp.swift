@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
 
         library.loadLibrary()
+        library.loadCustomFolders()
 
         cancellable = player.$isPlaying.receive(on: RunLoop.main).sink { [weak self] isPlaying in
             guard let button = self?.statusItem.button else { return }
@@ -101,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let hostingView = NSHostingView(rootView: settingsView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 460),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

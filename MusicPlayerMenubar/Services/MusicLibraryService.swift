@@ -10,6 +10,7 @@ final class MusicLibraryService: ObservableObject {
     @Published var isScanning = false
     @Published var statusMessage: String?
     @Published var lastRemoved: RemovedTrackInfo?
+    @Published var customFolders: [URL] = []
 
     struct RemovedTrackInfo {
         let track: Track
@@ -75,14 +76,51 @@ final class MusicLibraryService: ObservableObject {
         importURLs(panel.urls)
     }
 
-    func scanMusicFolder() {
-        let musicURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Music")
-        guard (try? musicURL.checkResourceIsReachable()) == true else {
-            showStatus("Music folder not found")
+    // MARK: - Custom Folders
+
+    private static let foldersKey = "customScanFolders"
+
+    func loadCustomFolders() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.foldersKey) ?? []
+        customFolders = paths.compactMap { URL(fileURLWithPath: $0) }
+    }
+
+    func addCustomFolder() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Select folders to scan for music"
+        panel.level = .floating
+
+        guard panel.runModal() == .OK else { return }
+
+        let existing = Set(customFolders.map { $0.path })
+        let newFolders = panel.urls.filter { !existing.contains($0.path) }
+        guard !newFolders.isEmpty else { return }
+        customFolders.append(contentsOf: newFolders)
+        saveCustomFolders()
+    }
+
+    func removeCustomFolder(_ folder: URL) {
+        customFolders.removeAll { $0 == folder }
+        saveCustomFolders()
+    }
+
+    func scanCustomFolders() {
+        let valid = customFolders.filter { (try? $0.checkResourceIsReachable()) == true }
+        guard !valid.isEmpty else {
+            showStatus("No valid folders to scan")
             return
         }
-        importURLs([musicURL])
+        importURLs(valid)
+    }
+
+    private func saveCustomFolders() {
+        let paths = customFolders.map { $0.path }
+        UserDefaults.standard.set(paths, forKey: Self.foldersKey)
     }
 
     private func importURLs(_ urls: [URL]) {
