@@ -37,9 +37,9 @@ struct MetadataService {
             }
         } catch {
             if duration == 0 {
-                if let player = try? AVAudioPlayer(contentsOf: url) {
-                    duration = player.duration
-                }
+                let item = AVPlayerItem(url: url)
+                let dur = try? await item.asset.load(.duration)
+                if let dur, dur.seconds.isFinite { duration = dur.seconds }
             }
         }
 

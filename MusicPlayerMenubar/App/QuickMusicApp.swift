@@ -35,17 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.target = self
         }
 
-        let hostingView = NSHostingView(
-            rootView: MusicMenuView()
-                .environmentObject(library)
-                .environmentObject(player)
-        )
-        hostingView.frame = NSRect(x: 0, y: 0, width: 340, height: 580)
-
-        let viewController = NSViewController()
-        viewController.view = hostingView
-
-        popover.contentViewController = viewController
         popover.contentSize = NSSize(width: 340, height: 580)
         popover.behavior = .transient
         popover.delegate = self
@@ -64,9 +53,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            let hostingView = NSHostingView(
+                rootView: MusicMenuView()
+                    .environmentObject(library)
+                    .environmentObject(player)
+            )
+            hostingView.frame = NSRect(x: 0, y: 0, width: 340, height: 580)
+            let viewController = NSViewController()
+            viewController.view = hostingView
+            popover.contentViewController = viewController
+
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popover.contentViewController = nil
     }
 
     private static func menubarIcon(playing: Bool) -> NSImage? {

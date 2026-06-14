@@ -27,7 +27,7 @@ enum LoopMode: CaseIterable {
 }
 
 @MainActor
-final class AudioPlayerService: NSObject, ObservableObject {
+final class AudioPlayerService: ObservableObject {
 
     @Published var currentTrack: Track?
     @Published var isPlaying = false
@@ -39,8 +39,11 @@ final class AudioPlayerService: NSObject, ObservableObject {
     @Published var playbackError: String?
     var isSeeking = false
 
-    private var player: AVAudioPlayer?
-    private var timer: Timer?
+    private var player: AVPlayer?
+    private var playerItem: AVPlayerItem?
+    private var timeObserver: Any?
+    private var endObserver: NSObjectProtocol?
+    private var statusObserver: NSKeyValueObservation?
     private var playlist: [Track] = []
     private var commandsConfigured = false
     private var currentArtworkURL: URL?
@@ -59,32 +62,57 @@ final class AudioPlayerService: NSObject, ObservableObject {
             return
         }
 
-        do {
-            player = try AVAudioPlayer(contentsOf: track.url)
-            player?.delegate = self
-            player?.volume = volume
-            player?.prepareToPlay()
-            player?.play()
+        cleanupItem()
 
-            currentTrack = track
-            isPlaying = true
-            duration = player?.duration ?? track.duration
-            savedPosition = 0
-            if !playlist.isEmpty {
-                self.playlist = playlist
-            }
+        let item = AVPlayerItem(url: track.url)
+        item.preferredForwardBufferDuration = 30
+        playerItem = item
 
-            setupRemoteCommands()
-            updateNowPlayingInfo()
-            startTimer()
-        } catch {
-            showError("Can't play: \(track.title)")
+        if player == nil {
+            player = AVPlayer(playerItem: item)
+        } else {
+            player?.replaceCurrentItem(with: item)
         }
+        player?.volume = volume
+        player?.play()
+
+        currentTrack = track
+        isPlaying = true
+        duration = track.duration
+        savedPosition = 0
+        if !playlist.isEmpty {
+            self.playlist = playlist
+        }
+
+        statusObserver = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.statusObserver = nil
+                if observed.status == .failed {
+                    self.showError("Can't play: \(track.title)")
+                    self.stop()
+                }
+            }
+        }
+
+        Task {
+            if let dur = try? await item.asset.load(.duration),
+               dur.seconds.isFinite && dur.seconds > 0 {
+                self.duration = dur.seconds
+                self.updateNowPlayingInfo()
+            }
+        }
+
+        addEndObserver(for: item)
+        addTimeObserver()
+        setupRemoteCommands()
+        updateNowPlayingInfo()
     }
 
     func pause() {
         if let player {
-            savedPosition = player.currentTime
+            let t = player.currentTime().seconds
+            if t.isFinite { savedPosition = t }
         }
         player?.pause()
         isPlaying = false
@@ -95,60 +123,62 @@ final class AudioPlayerService: NSObject, ObservableObject {
     func resume() {
         cancelIdleTimer()
 
-        if player == nil, let track = currentTrack {
-            do {
-                player = try AVAudioPlayer(contentsOf: track.url)
-                player?.delegate = self
-                player?.volume = volume
-                player?.prepareToPlay()
-                player?.currentTime = savedPosition
-            } catch {
-                showError("Can't resume: \(track.title)")
+        if playerItem == nil, let track = currentTrack {
+            guard (try? track.url.checkResourceIsReachable()) == true else {
+                showError("File not found: \(track.title)")
                 return
             }
-            startTimer()
+
+            let item = AVPlayerItem(url: track.url)
+            item.preferredForwardBufferDuration = 30
+            playerItem = item
+
+            if player == nil {
+                player = AVPlayer(playerItem: item)
+                player?.volume = volume
+            } else {
+                player?.replaceCurrentItem(with: item)
+            }
+
+            let target = CMTime(seconds: savedPosition, preferredTimescale: 600)
+            player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+
+            addEndObserver(for: item)
+            addTimeObserver()
         }
 
-        guard let player, currentTrack != nil else { return }
-        player.play()
+        guard player != nil, playerItem != nil, currentTrack != nil else { return }
+        player?.play()
         isPlaying = true
         updateNowPlayingInfo()
     }
 
     func togglePlayback() {
-        if isPlaying {
-            pause()
-        } else {
-            resume()
-        }
+        if isPlaying { pause() }
+        else { resume() }
     }
 
     func stop() {
         cancelIdleTimer()
-        player?.stop()
-        player = nil
+        cleanupItem()
         isPlaying = false
         currentTrack = nil
         progress = 0
         currentTime = 0
         duration = 0
         savedPosition = 0
-        timer?.invalidate()
         clearNowPlayingInfo()
     }
 
     func seek(to progress: Double) {
+        let targetTime = duration * progress
+        self.progress = progress
+        self.currentTime = targetTime
+        savedPosition = targetTime
+
         if let player {
-            let targetTime = player.duration * progress
-            player.currentTime = targetTime
-            self.progress = progress
-            self.currentTime = targetTime
-            savedPosition = targetTime
-        } else if duration > 0 {
-            let targetTime = duration * progress
-            self.progress = progress
-            self.currentTime = targetTime
-            savedPosition = targetTime
+            let cmTime = CMTime(seconds: targetTime, preferredTimescale: 600)
+            player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         }
         updateNowPlayingInfo()
     }
@@ -186,11 +216,9 @@ final class AudioPlayerService: NSObject, ObservableObject {
               let index = playlist.firstIndex(where: { $0.id == current.id })
         else { return }
 
-        let playbackPosition = player?.currentTime ?? savedPosition
-        if playbackPosition > 3 {
-            if let player {
-                player.currentTime = 0
-            }
+        let pos = player?.currentTime().seconds ?? savedPosition
+        if pos.isFinite && pos > 3 {
+            player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             savedPosition = 0
             updateNowPlayingInfo()
             return
@@ -198,6 +226,80 @@ final class AudioPlayerService: NSObject, ObservableObject {
 
         let prevIndex = index > 0 ? index - 1 : playlist.count - 1
         play(track: playlist[prevIndex])
+    }
+
+    // MARK: - Playback Observers
+
+    private func addTimeObserver() {
+        removeTimeObserver()
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        timeObserver = player?.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] time in
+            Task { @MainActor in
+                guard let self, !self.isSeeking else { return }
+                let seconds = time.seconds
+                if seconds.isFinite && self.duration > 0 {
+                    self.currentTime = seconds
+                    self.progress = seconds / self.duration
+                }
+            }
+        }
+    }
+
+    private func removeTimeObserver() {
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+    }
+
+    private func addEndObserver(for item: AVPlayerItem) {
+        removeEndObserver()
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handlePlaybackEnd()
+            }
+        }
+    }
+
+    private func removeEndObserver() {
+        if let observer = endObserver {
+            NotificationCenter.default.removeObserver(observer)
+            endObserver = nil
+        }
+    }
+
+    private func handlePlaybackEnd() {
+        switch loopMode {
+        case .one:
+            if let track = currentTrack {
+                play(track: track)
+            }
+        case .all:
+            playNext()
+        case .off:
+            let autoPlay = UserDefaults.standard.object(forKey: "autoPlayNext") as? Bool ?? true
+            if autoPlay {
+                playNext()
+            } else {
+                stop()
+            }
+        }
+    }
+
+    private func cleanupItem() {
+        removeTimeObserver()
+        removeEndObserver()
+        statusObserver = nil
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        playerItem = nil
     }
 
     // MARK: - Idle Memory Management
@@ -220,13 +322,12 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     private func releaseIdleResources() {
-        guard !isPlaying, player != nil else { return }
+        guard !isPlaying, playerItem != nil else { return }
         if let player {
-            savedPosition = player.currentTime
+            let t = player.currentTime().seconds
+            if t.isFinite { savedPosition = t }
         }
-        player?.stop()
-        player = nil
-        timer?.invalidate()
+        cleanupItem()
         ArtworkCache.shared.trimCache()
     }
 
@@ -282,16 +383,17 @@ final class AudioPlayerService: NSObject, ObservableObject {
             return
         }
 
+        let elapsed = player?.currentTime().seconds ?? savedPosition
+
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
             MPMediaItemPropertyPlaybackDuration: duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: player?.currentTime ?? savedPosition,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed.isFinite ? elapsed : 0,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
 
-        // Preserve existing artwork if already loaded for this track
         if let existing = MPNowPlayingInfoCenter.default().nowPlayingInfo,
            let artwork = existing[MPMediaItemPropertyArtwork] {
             info[MPMediaItemPropertyArtwork] = artwork
@@ -310,33 +412,18 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     private func loadNowPlayingArtwork(for track: Track) {
-        // Only load once per track
         guard currentArtworkURL != track.url else { return }
         currentArtworkURL = track.url
 
-        Task.detached(priority: .utility) {
-            let asset = AVURLAsset(url: track.url)
-            do {
-                let metadata = try await asset.load(.metadata)
-                for item in metadata {
-                    if item.commonKey == .commonKeyArtwork,
-                       let data = try await item.load(.dataValue),
-                       let image = NSImage(data: data) {
-                        await MainActor.run { [weak self] in
-                            guard let self,
-                                  self.currentTrack?.url == track.url,
-                                  var info = MPNowPlayingInfoCenter.default().nowPlayingInfo
-                            else { return }
-                            let artwork = MPMediaItemArtwork(
-                                boundsSize: image.size
-                            ) { _ in image }
-                            info[MPMediaItemPropertyArtwork] = artwork
-                            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-                        }
-                        return
-                    }
-                }
-            } catch {}
+        Task {
+            guard let image = await ArtworkCache.shared.loadThumbnail(for: track, size: 300)
+            else { return }
+            guard self.currentTrack?.url == track.url,
+                  var info = MPNowPlayingInfoCenter.default().nowPlayingInfo
+            else { return }
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            info[MPMediaItemPropertyArtwork] = artwork
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
     }
 
@@ -352,57 +439,12 @@ final class AudioPlayerService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Timer
-
-    private func startTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(
-            withTimeInterval: 0.25,
-            repeats: true
-        ) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let player = self.player else { return }
-                if player.duration > 0 && !self.isSeeking {
-                    self.progress = player.currentTime / player.duration
-                    self.currentTime = player.currentTime
-                }
-                if !player.isPlaying && self.isPlaying {
-                    self.isPlaying = false
-                }
-            }
-        }
-    }
+    // MARK: - Helpers
 
     static func formatTime(_ seconds: Double) -> String {
         guard seconds.isFinite && seconds >= 0 else { return "0:00" }
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return "\(mins):\(String(format: "%02d", secs))"
-    }
-}
-
-extension AudioPlayerService: AVAudioPlayerDelegate {
-
-    nonisolated func audioPlayerDidFinishPlaying(
-        _ player: AVAudioPlayer,
-        successfully flag: Bool
-    ) {
-        Task { @MainActor in
-            switch loopMode {
-            case .one:
-                if let track = currentTrack {
-                    play(track: track)
-                }
-            case .all:
-                playNext()
-            case .off:
-                let autoPlay = UserDefaults.standard.object(forKey: "autoPlayNext") as? Bool ?? true
-                if autoPlay {
-                    playNext()
-                } else {
-                    stop()
-                }
-            }
-        }
     }
 }

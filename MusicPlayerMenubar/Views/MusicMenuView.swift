@@ -4,7 +4,6 @@ struct MusicMenuView: View {
 
     @EnvironmentObject var library: MusicLibraryService
     @EnvironmentObject var player: AudioPlayerService
-    @ObservedObject private var artworkCache = ArtworkCache.shared
 
     @State private var searchText = ""
     @State private var isHoveringVolume = false
@@ -15,10 +14,11 @@ struct MusicMenuView: View {
         if searchText.isEmpty {
             return library.tracks
         }
+        let query = searchText.lowercased()
         return library.tracks.filter { track in
-            fuzzyMatch(searchText, in: track.title)
-            || fuzzyMatch(searchText, in: track.artist)
-            || fuzzyMatch(searchText, in: track.album)
+            fuzzyMatch(query, in: track.searchTitle)
+            || fuzzyMatch(query, in: track.searchArtist)
+            || fuzzyMatch(query, in: track.searchAlbum)
         }
     }
 
@@ -100,7 +100,7 @@ struct MusicMenuView: View {
     private var nowPlayingSection: some View {
         VStack(spacing: 10) {
             HStack(spacing: 14) {
-                artworkView(for: player.currentTrack, size: 56)
+                TrackArtworkView(track: player.currentTrack, size: 56)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(player.currentTrack?.title ?? "No Track Selected")
@@ -333,7 +333,7 @@ struct MusicMenuView: View {
                 player.play(track: track, playlist: filteredTracks)
             } label: {
                 HStack(spacing: 10) {
-                    artworkView(for: track, size: 36)
+                    TrackArtworkView(track: track, size: 36)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(track.title)
@@ -492,9 +492,6 @@ struct MusicMenuView: View {
     // MARK: - Fuzzy Search
 
     private func fuzzyMatch(_ query: String, in text: String) -> Bool {
-        let query = query.lowercased()
-        let text = text.lowercased()
-
         if text.contains(query) { return true }
 
         var queryIndex = query.startIndex
@@ -507,11 +504,26 @@ struct MusicMenuView: View {
         return queryIndex == query.endIndex
     }
 
-    // MARK: - Helpers
+}
 
-    private func artworkView(for track: Track?, size: CGFloat) -> some View {
+// MARK: - Track Artwork
+
+private struct TrackArtworkView: View {
+    let track: Track?
+    let size: CGFloat
+    @State private var image: NSImage?
+
+    init(track: Track?, size: CGFloat) {
+        self.track = track
+        self.size = size
+        if let track {
+            _image = State(initialValue: ArtworkCache.shared.cachedThumbnail(for: track, size: size))
+        }
+    }
+
+    var body: some View {
         Group {
-            if let track, let image = artworkCache.thumbnail(for: track, size: size) {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -526,5 +538,15 @@ struct MusicMenuView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.15))
+        .task(id: track?.id) {
+            guard let track else {
+                image = nil
+                return
+            }
+            image = ArtworkCache.shared.cachedThumbnail(for: track, size: size)
+            if image == nil {
+                image = await ArtworkCache.shared.loadThumbnail(for: track, size: size)
+            }
+        }
     }
 }
