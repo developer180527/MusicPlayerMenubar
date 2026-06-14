@@ -44,11 +44,15 @@ final class AudioPlayerService: NSObject, ObservableObject {
     private var playlist: [Track] = []
     private var commandsConfigured = false
     private var currentArtworkURL: URL?
+    private var idleTimer: Timer?
+    private var savedPosition: Double = 0
+    private static let idleTimeout: TimeInterval = 120
 
     // MARK: - Playback
 
     func play(track: Track, playlist: [Track] = []) {
         playbackError = nil
+        cancelIdleTimer()
 
         guard (try? track.url.checkResourceIsReachable()) == true else {
             showError("File not found: \(track.title)")
@@ -65,6 +69,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
             currentTrack = track
             isPlaying = true
             duration = player?.duration ?? track.duration
+            savedPosition = 0
             if !playlist.isEmpty {
                 self.playlist = playlist
             }
@@ -78,12 +83,32 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     func pause() {
+        if let player {
+            savedPosition = player.currentTime
+        }
         player?.pause()
         isPlaying = false
         updateNowPlayingInfo()
+        startIdleTimer()
     }
 
     func resume() {
+        cancelIdleTimer()
+
+        if player == nil, let track = currentTrack {
+            do {
+                player = try AVAudioPlayer(contentsOf: track.url)
+                player?.delegate = self
+                player?.volume = volume
+                player?.prepareToPlay()
+                player?.currentTime = savedPosition
+            } catch {
+                showError("Can't resume: \(track.title)")
+                return
+            }
+            startTimer()
+        }
+
         guard let player, currentTrack != nil else { return }
         player.play()
         isPlaying = true
@@ -99,6 +124,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
     }
 
     func stop() {
+        cancelIdleTimer()
         player?.stop()
         player = nil
         isPlaying = false
@@ -106,16 +132,24 @@ final class AudioPlayerService: NSObject, ObservableObject {
         progress = 0
         currentTime = 0
         duration = 0
+        savedPosition = 0
         timer?.invalidate()
         clearNowPlayingInfo()
     }
 
     func seek(to progress: Double) {
-        guard let player else { return }
-        let targetTime = player.duration * progress
-        player.currentTime = targetTime
-        self.progress = progress
-        self.currentTime = targetTime
+        if let player {
+            let targetTime = player.duration * progress
+            player.currentTime = targetTime
+            self.progress = progress
+            self.currentTime = targetTime
+            savedPosition = targetTime
+        } else if duration > 0 {
+            let targetTime = duration * progress
+            self.progress = progress
+            self.currentTime = targetTime
+            savedPosition = targetTime
+        }
         updateNowPlayingInfo()
     }
 
@@ -152,14 +186,48 @@ final class AudioPlayerService: NSObject, ObservableObject {
               let index = playlist.firstIndex(where: { $0.id == current.id })
         else { return }
 
-        if let player, player.currentTime > 3 {
-            player.currentTime = 0
+        let playbackPosition = player?.currentTime ?? savedPosition
+        if playbackPosition > 3 {
+            if let player {
+                player.currentTime = 0
+            }
+            savedPosition = 0
             updateNowPlayingInfo()
             return
         }
 
         let prevIndex = index > 0 ? index - 1 : playlist.count - 1
         play(track: playlist[prevIndex])
+    }
+
+    // MARK: - Idle Memory Management
+
+    private func startIdleTimer() {
+        cancelIdleTimer()
+        idleTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.idleTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.releaseIdleResources()
+            }
+        }
+    }
+
+    private func cancelIdleTimer() {
+        idleTimer?.invalidate()
+        idleTimer = nil
+    }
+
+    private func releaseIdleResources() {
+        guard !isPlaying, player != nil else { return }
+        if let player {
+            savedPosition = player.currentTime
+        }
+        player?.stop()
+        player = nil
+        timer?.invalidate()
+        ArtworkCache.shared.trimCache()
     }
 
     // MARK: - Now Playing Integration
@@ -201,8 +269,8 @@ final class AudioPlayerService: NSObject, ObservableObject {
             }
             let time = event.positionTime
             Task { @MainActor in
-                guard let self, let player = self.player, player.duration > 0 else { return }
-                self.seek(to: time / player.duration)
+                guard let self, self.duration > 0 else { return }
+                self.seek(to: time / self.duration)
             }
             return .success
         }
@@ -219,7 +287,7 @@ final class AudioPlayerService: NSObject, ObservableObject {
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
             MPMediaItemPropertyPlaybackDuration: duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: player?.currentTime ?? 0,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: player?.currentTime ?? savedPosition,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
 

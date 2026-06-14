@@ -58,6 +58,12 @@ final class ArtworkCache: ObservableObject {
         return nil
     }
 
+    func trimCache() {
+        cache.removeAllObjects()
+        pending.removeAll()
+        objectWillChange.send()
+    }
+
     private static func resized(_ image: NSImage, to size: CGFloat) -> NSImage {
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let px = size * scale
@@ -72,6 +78,13 @@ final class ArtworkCache: ObservableObject {
             fraction: 1.0
         )
         thumb.unlockFocus()
-        return thumb
+
+        guard let tiff = thumb.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.7]),
+              let compressed = NSImage(data: jpeg)
+        else { return thumb }
+        compressed.size = NSSize(width: size, height: size)
+        return compressed
     }
 }
