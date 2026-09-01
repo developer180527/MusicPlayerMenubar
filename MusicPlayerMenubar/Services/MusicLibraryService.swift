@@ -38,7 +38,16 @@ final class MusicLibraryService: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode([Track].self, from: data)
-            let valid = decoded.filter { (try? $0.url.checkResourceIsReachable()) == true }
+
+            // Only drop a track when we can actually see where it lives. Under
+            // the sandbox an unreachable result means "no security scope here"
+            // just as often as "file deleted", and pruning on that would wipe
+            // the whole library the first time a bookmark fails to resolve.
+            let store = SecurityScopedStore.shared
+            let valid = decoded.filter { track in
+                guard store.isCovered(track.url) else { return true }
+                return (try? track.url.checkResourceIsReachable()) == true
+            }
             let removedCount = decoded.count - valid.count
             tracks = valid
             if removedCount > 0 {
@@ -73,6 +82,17 @@ final class MusicLibraryService: ObservableObject {
         panel.level = .floating
 
         guard panel.runModal() == .OK else { return }
+
+        // The panel grant only lasts for this launch; bookmark it so the files
+        // are still reachable next time.
+        var ungranted = 0
+        for url in panel.urls where !SecurityScopedStore.shared.addRoot(url) {
+            ungranted += 1
+        }
+        if ungranted > 0 {
+            showStatus("\(ungranted) item\(ungranted == 1 ? "" : "s") can't be saved for next launch")
+        }
+
         importURLs(panel.urls)
     }
 
@@ -80,9 +100,21 @@ final class MusicLibraryService: ObservableObject {
 
     private static let foldersKey = "customScanFolders"
 
+    /// Scan folders are the subset of granted roots the user designated for
+    /// rescanning. The stored paths are only an index — the authority to open
+    /// them comes from the bookmark `SecurityScopedStore` holds.
     func loadCustomFolders() {
         let paths = UserDefaults.standard.stringArray(forKey: Self.foldersKey) ?? []
-        customFolders = paths.compactMap { URL(fileURLWithPath: $0) }
+        let store = SecurityScopedStore.shared
+        customFolders = paths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { store.isCovered($0) }
+
+        // A folder whose bookmark no longer resolves can never be scanned, so
+        // drop it instead of leaving a dead row in Settings.
+        if customFolders.count != paths.count {
+            saveCustomFolders()
+        }
     }
 
     func addCustomFolder() {
@@ -98,7 +130,19 @@ final class MusicLibraryService: ObservableObject {
         guard panel.runModal() == .OK else { return }
 
         let existing = Set(customFolders.map { $0.path })
-        let newFolders = panel.urls.filter { !existing.contains($0.path) }
+        var newFolders: [URL] = []
+        var ungranted = 0
+        for url in panel.urls where !existing.contains(url.path) {
+            if SecurityScopedStore.shared.addRoot(url) {
+                newFolders.append(url)
+            } else {
+                ungranted += 1
+            }
+        }
+
+        if ungranted > 0 {
+            showStatus("\(ungranted) folder\(ungranted == 1 ? "" : "s") couldn't be added")
+        }
         guard !newFolders.isEmpty else { return }
         customFolders.append(contentsOf: newFolders)
         saveCustomFolders()
@@ -107,6 +151,16 @@ final class MusicLibraryService: ObservableObject {
     func removeCustomFolder(_ folder: URL) {
         customFolders.removeAll { $0 == folder }
         saveCustomFolders()
+
+        // Keep the underlying grant when tracks still live inside this folder.
+        // Removing it from the scan list shouldn't make those tracks unplayable.
+        let prefix = folder.standardizedFileURL.path + "/"
+        let stillNeeded = tracks.contains {
+            $0.url.standardizedFileURL.path.hasPrefix(prefix)
+        }
+        if !stillNeeded {
+            SecurityScopedStore.shared.removeRoot(folder)
+        }
     }
 
     func scanCustomFolders() {
@@ -123,6 +177,35 @@ final class MusicLibraryService: ObservableObject {
         UserDefaults.standard.set(paths, forKey: Self.foldersKey)
     }
 
+    /// Walks `urls` (recursing into directories) for files with a supported
+    /// extension. Kept synchronous: NSEnumerator's iterator can't be used from
+    /// an async context.
+    nonisolated private static func audioFiles(
+        in urls: [URL],
+        matching extensions: Set<String>
+    ) -> [URL] {
+        var results: [URL] = []
+        for url in urls {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+               isDir.boolValue {
+                guard let enumerator = FileManager.default.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+                for case let fileURL as URL in enumerator {
+                    if extensions.contains(fileURL.pathExtension.lowercased()) {
+                        results.append(fileURL)
+                    }
+                }
+            } else if extensions.contains(url.pathExtension.lowercased()) {
+                results.append(url)
+            }
+        }
+        return results
+    }
+
     private func importURLs(_ urls: [URL]) {
         let existingURLs = Set(tracks.map { $0.url })
         let extensions = supportedExtensions
@@ -131,27 +214,7 @@ final class MusicLibraryService: ObservableObject {
 
         Task {
             let fileURLs = await Task.detached(priority: .userInitiated) {
-                () -> [URL] in
-                var results: [URL] = []
-                for url in urls {
-                    var isDir: ObjCBool = false
-                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-                       isDir.boolValue {
-                        guard let enumerator = FileManager.default.enumerator(
-                            at: url,
-                            includingPropertiesForKeys: [.isRegularFileKey],
-                            options: [.skipsHiddenFiles]
-                        ) else { continue }
-                        for case let fileURL as URL in enumerator {
-                            if extensions.contains(fileURL.pathExtension.lowercased()) {
-                                results.append(fileURL)
-                            }
-                        }
-                    } else if extensions.contains(url.pathExtension.lowercased()) {
-                        results.append(url)
-                    }
-                }
-                return results
+                Self.audioFiles(in: urls, matching: extensions)
             }.value
 
             let newURLs = fileURLs.filter { !existingURLs.contains($0) }

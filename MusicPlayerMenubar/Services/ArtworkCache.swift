@@ -38,7 +38,7 @@ final class ArtworkCache {
 
     private init() {
         cache.countLimit = 200
-        cache.totalCostLimit = 8 * 1024 * 1024
+        cache.totalCostLimit = 4 * 1024 * 1024
 
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         diskCacheDir = caches.appendingPathComponent("MusicPlayerMenubar/artwork", isDirectory: true)

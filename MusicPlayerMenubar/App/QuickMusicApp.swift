@@ -12,7 +12,7 @@ struct QuickMusicApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
 
     static private(set) var shared: AppDelegate!
 
@@ -39,8 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.delegate = self
 
-        library.loadLibrary()
+        // Order matters: without an active security scope every track URL reads
+        // as unreachable, so the library must not load until access is open.
+        SecurityScopedStore.shared.restore()
         library.loadCustomFolders()
+        library.loadLibrary()
 
         cancellable = player.$isPlaying.receive(on: RunLoop.main).sink { [weak self] isPlaying in
             guard let button = self?.statusItem.button else { return }
@@ -70,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         popover.contentViewController = nil
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        SecurityScopedStore.shared.releaseAll()
     }
 
     private static func menubarIcon(playing: Bool) -> NSImage? {
@@ -114,9 +121,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         window.contentView = hostingView
         window.center()
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         settingsWindow = window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === settingsWindow else { return }
+
+        // Tear down the SwiftUI tree once AppKit is done with the close.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.settingsWindow?.delegate = nil
+            self.settingsWindow?.contentView = nil
+            self.settingsWindow = nil
+        }
     }
 }

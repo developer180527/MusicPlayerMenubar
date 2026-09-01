@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Local-only edition.
+
+	  There is deliberately NO com.apple.security.network.client key here.
+	  Once com.apple.security.app-sandbox is set to <true/>, its absence is
+	  enforced by the kernel: outbound connections fail at the syscall,
+	  whatever the code tries to do.
+
+	  Do not add a network entitlement to this file. Network capability
+	  belongs to the Stream target and Entitlements/Stream.entitlements.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>

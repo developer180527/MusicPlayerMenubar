@@ -51,6 +51,10 @@ final class AudioPlayerService: ObservableObject {
     private var savedPosition: Double = 0
     private static let idleTimeout: TimeInterval = 120
 
+    /// Local files stream straight off disk, so a large read-ahead window only
+    /// wastes RAM. 5s is enough to cover seek and decode hiccups.
+    private static let forwardBuffer: TimeInterval = 5
+
     // MARK: - Playback
 
     func play(track: Track, playlist: [Track] = []) {
@@ -65,7 +69,7 @@ final class AudioPlayerService: ObservableObject {
         cleanupItem()
 
         let item = AVPlayerItem(url: track.url)
-        item.preferredForwardBufferDuration = 30
+        item.preferredForwardBufferDuration = Self.forwardBuffer
         playerItem = item
 
         if player == nil {
@@ -130,7 +134,7 @@ final class AudioPlayerService: ObservableObject {
             }
 
             let item = AVPlayerItem(url: track.url)
-            item.preferredForwardBufferDuration = 30
+            item.preferredForwardBufferDuration = Self.forwardBuffer
             playerItem = item
 
             if player == nil {
@@ -161,6 +165,7 @@ final class AudioPlayerService: ObservableObject {
     func stop() {
         cancelIdleTimer()
         cleanupItem()
+        player = nil
         isPlaying = false
         currentTrack = nil
         progress = 0
@@ -322,12 +327,25 @@ final class AudioPlayerService: ObservableObject {
     }
 
     private func releaseIdleResources() {
-        guard !isPlaying, playerItem != nil else { return }
+        guard !isPlaying, player != nil else { return }
         if let player {
             let t = player.currentTime().seconds
             if t.isFinite { savedPosition = t }
         }
         cleanupItem()
+
+        // Drop the player itself too — resume() rebuilds it from savedPosition.
+        player = nil
+
+        // Keep the Now Playing entry (so Control Center can still resume us),
+        // but release the artwork image the closure is holding onto.
+        if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo,
+           info[MPMediaItemPropertyArtwork] != nil {
+            info[MPMediaItemPropertyArtwork] = nil
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        }
+        currentArtworkURL = nil
+
         ArtworkCache.shared.trimCache()
     }
 
@@ -416,7 +434,7 @@ final class AudioPlayerService: ObservableObject {
         currentArtworkURL = track.url
 
         Task {
-            guard let image = await ArtworkCache.shared.loadThumbnail(for: track, size: 300)
+            guard let image = await ArtworkCache.shared.loadThumbnail(for: track, size: 150)
             else { return }
             guard self.currentTrack?.url == track.url,
                   var info = MPNowPlayingInfoCenter.default().nowPlayingInfo
