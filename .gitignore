@@ -1,0 +1,11 @@
+# Build products
+build/
+.dmgbuild/
+dist/
+DerivedData/
+
+# Xcode user state
+xcuserdata/
+*.xcuserdatad
+
+.DS_Store
