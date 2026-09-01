@@ -5,107 +5,91 @@ extension MusicMenuView {
 
     var librarySection: some View {
         VStack(spacing: 0) {
-            searchField
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+                TextField("Search music...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .onSubmit {
+                        if let track = filteredTracks.first {
+                            player.play(track: track, playlist: filteredTracks)
+                        }
+                    }
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.quaternary.opacity(0.5))
 
             Divider()
 
             if library.isScanning {
-                scanningPlaceholder
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Scanning library...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredTracks.isEmpty {
-                emptyPlaceholder
-            } else {
-                trackList
-            }
-        }
-        .frame(maxHeight: .infinity)
-    }
-
-    private var searchField: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.system(size: 12))
-            TextField("Search music...", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .onSubmit {
-                    if let track = filteredTracks.first {
-                        player.play(track: track, playlist: filteredTracks)
+                VStack(spacing: 8) {
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.tertiary)
+                    Text(library.tracks.isEmpty ? "No music found" : "No results")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if library.tracks.isEmpty {
+                        Button("Add Music...") {
+                            library.addFiles()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
                     }
                 }
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 11))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.quaternary.opacity(0.5))
-    }
-
-    private var scanningPlaceholder: some View {
-        VStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Scanning library...")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var emptyPlaceholder: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "music.note.list")
-                .font(.system(size: 24))
-                .foregroundStyle(.tertiary)
-            Text(library.tracks.isEmpty ? "No music found" : "No results")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if library.tracks.isEmpty {
-                Button("Add Music...") {
-                    library.addFiles()
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(Color.accentColor)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var trackList: some View {
-        ScrollViewReader { proxy in
-            // Resolve the filter once per render. `filteredTracks` is
-            // computed, so reading it inside the row body reran the
-            // whole fuzzy search for every row that materialized.
-            let tracks = filteredTracks
-            let lastID = tracks.last?.id
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(tracks) { track in
-                        trackRow(track)
-                            .id(track.id)
-                        if track.id != lastID {
-                            Divider()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    // Resolve the filter once per render. `filteredTracks` is
+                    // computed, so reading it inside the row body reran the
+                    // whole fuzzy search for every row that materialized.
+                    let tracks = filteredTracks
+                    let lastID = tracks.last?.id
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(tracks) { track in
+                                trackRow(track)
+                                    .id(track.id)
+                                if track.id != lastID {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: selectedTrackID) { _, newID in
+                        if let id = newID {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                proxy.scrollTo(id, anchor: .center)
+                            }
                         }
                     }
                 }
             }
-            .onChange(of: selectedTrackID) { _, newID in
-                if let id = newID {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        proxy.scrollTo(id, anchor: .center)
-                    }
-                }
-            }
         }
+        .frame(maxHeight: .infinity)
     }
 
     private func trackRow(_ track: Track) -> some View {
