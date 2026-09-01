@@ -71,18 +71,6 @@ final class AudioPlayerService: ObservableObject {
 
         cleanupItem()
 
-        let item = AVPlayerItem(url: track.url)
-        item.preferredForwardBufferDuration = Self.forwardBuffer
-        playerItem = item
-
-        if player == nil {
-            player = AVPlayer(playerItem: item)
-        } else {
-            player?.replaceCurrentItem(with: item)
-        }
-        player?.volume = volume
-        player?.play()
-
         currentTrack = track
         isPlaying = true
         duration = track.duration
@@ -95,6 +83,45 @@ final class AudioPlayerService: ObservableObject {
         if !playlist.isEmpty {
             self.playlist = playlist
         }
+
+        let item = installItem(for: track)
+        player?.play()
+
+        Task {
+            let loaded = try? await item.asset.load(.duration)
+            // Switching tracks quickly leaves this load in flight; publishing it
+            // would stamp the previous track's length onto the current one and
+            // skew the scrubber and every seek computed from it.
+            guard self.playerItem === item else { return }
+            if let loaded, loaded.seconds.isFinite, loaded.seconds > 0 {
+                self.duration = loaded.seconds
+                self.updateNowPlayingInfo()
+            }
+        }
+
+        setupRemoteCommands()
+        updateNowPlayingInfo()
+    }
+
+    /// Creates the player item for `track` and attaches everything that watches
+    /// it.
+    ///
+    /// Both `play` and `resume` need this. Keeping two copies is how `resume`
+    /// came to have no status observer: a file that was reachable but
+    /// unplayable failed there with nothing watching, leaving the interface
+    /// claiming playback over silence.
+    @discardableResult
+    private func installItem(for track: Track) -> AVPlayerItem {
+        let item = AVPlayerItem(url: track.url)
+        item.preferredForwardBufferDuration = Self.forwardBuffer
+        playerItem = item
+
+        if player == nil {
+            player = AVPlayer(playerItem: item)
+        } else {
+            player?.replaceCurrentItem(with: item)
+        }
+        player?.volume = volume
 
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
             Task { @MainActor in
@@ -111,22 +138,9 @@ final class AudioPlayerService: ObservableObject {
             }
         }
 
-        Task {
-            let loaded = try? await item.asset.load(.duration)
-            // Switching tracks quickly leaves this load in flight; publishing it
-            // would stamp the previous track's length onto the current one and
-            // skew the scrubber and every seek computed from it.
-            guard self.playerItem === item else { return }
-            if let loaded, loaded.seconds.isFinite, loaded.seconds > 0 {
-                self.duration = loaded.seconds
-                self.updateNowPlayingInfo()
-            }
-        }
-
         addEndObserver(for: item)
         addTimeObserver()
-        setupRemoteCommands()
-        updateNowPlayingInfo()
+        return item
     }
 
     func pause() {
@@ -149,22 +163,10 @@ final class AudioPlayerService: ObservableObject {
                 return
             }
 
-            let item = AVPlayerItem(url: track.url)
-            item.preferredForwardBufferDuration = Self.forwardBuffer
-            playerItem = item
-
-            if player == nil {
-                player = AVPlayer(playerItem: item)
-                player?.volume = volume
-            } else {
-                player?.replaceCurrentItem(with: item)
-            }
+            installItem(for: track)
 
             let target = CMTime(seconds: savedPosition, preferredTimescale: 600)
             player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-
-            addEndObserver(for: item)
-            addTimeObserver()
         }
 
         guard player != nil, playerItem != nil, currentTrack != nil else { return }
@@ -266,6 +268,10 @@ final class AudioPlayerService: ObservableObject {
         if pos.isFinite && pos > 3 {
             player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             savedPosition = 0
+            // Rewinding without clearing these leaves the scrubber showing the
+            // old position until the next observer tick.
+            progress = 0
+            currentTime = 0
             updateNowPlayingInfo()
             return
         }

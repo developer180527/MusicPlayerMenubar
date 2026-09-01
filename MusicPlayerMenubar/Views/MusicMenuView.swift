@@ -567,9 +567,12 @@ private struct TrackArtworkView: View {
             }
             image = nil
             let loaded = await ArtworkCache.shared.loadThumbnail(for: track, size: size)
-            // The row may have been recycled onto another track while the
-            // decode was in flight; don't publish a result it didn't ask for.
-            guard track.id == self.track?.id else { return }
+            // `.task(id:)` cancels this when the row is recycled onto another
+            // track, but the decode itself never checks cancellation, so
+            // execution resumes here regardless. Comparing against `self.track`
+            // would not help: the closure captured the view struct by value, so
+            // it still holds the track this task started for.
+            guard !Task.isCancelled else { return }
             image = loaded
             loadedID = track.id
         }
