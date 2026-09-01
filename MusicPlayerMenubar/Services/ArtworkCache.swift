@@ -84,12 +84,78 @@ final class ArtworkCache {
         cache.removeAllObjects()
     }
 
+    /// Caps the on-disk thumbnail cache, oldest first.
+    ///
+    /// Keys carry a content fingerprint, so re-tagging a file writes a new
+    /// entry instead of overwriting the old one. Without a sweep those orphans
+    /// would accumulate for the life of the install.
+    func pruneDiskCache() {
+        let dir = diskCacheDir
+        Task.detached(priority: .background) {
+            Self.prune(dir: dir, limit: 20 * 1024 * 1024)
+        }
+    }
+
+    nonisolated private static func prune(dir: URL, limit: Int) {
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var entries: [(url: URL, date: Date, size: Int)] = []
+        var total = 0
+        for file in files {
+            guard let values = try? file.resourceValues(forKeys: Set(keys)) else { continue }
+            let size = values.fileSize ?? 0
+            entries.append((file, values.contentModificationDate ?? .distantPast, size))
+            total += size
+        }
+
+        guard total > limit else { return }
+
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            try? FileManager.default.removeItem(at: entry.url)
+            total -= entry.size
+            if total <= limit { break }
+        }
+    }
+
     private func diskURL(for key: String) -> URL {
         diskCacheDir.appendingPathComponent(Self.stableHash(key) + ".jpg")
     }
 
+    /// Keyed on file *contents*, not just identity.
+    ///
+    /// A key of URL + size alone goes stale the moment a file's embedded
+    /// artwork changes: the path is unchanged, so both cache layers keep
+    /// serving the old image — and because the disk cache persists, it survives
+    /// relaunches. Folding in modification time and size means re-tagged files
+    /// miss the cache and get decoded fresh, while untouched files still hit.
     private func cacheKey(track: Track, size: CGFloat) -> String {
-        "\(track.url.absoluteString)::\(Int(size))"
+        "\(track.url.absoluteString)::\(Int(size))::\(Self.contentToken(for: track.url))"
+    }
+
+    /// Cheap content fingerprint. This is a metadata stat, not a read of the
+    /// audio data, so it stays inexpensive on the synchronous scroll path.
+    nonisolated private static func contentToken(for url: URL) -> String {
+        // `URL` caches resource values on the instance, and `Track.url` is held
+        // for the lifetime of the app — querying it directly returns whatever
+        // was read the first time, which would make this fingerprint as stale
+        // as the bug it exists to prevent. Drop the cache on a local copy first.
+        var probe = url
+        probe.removeAllCachedResourceValues()
+
+        guard let values = try? probe.resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey]
+        ), let modified = values.contentModificationDate else {
+            // No security scope, or the file vanished. Fall back to a constant
+            // so lookups stay consistent; the URL still keeps keys distinct.
+            return "x"
+        }
+        let stamp = UInt64(max(0, modified.timeIntervalSince1970) * 1000)
+        return "\(stamp)-\(values.fileSize ?? 0)"
     }
 
     nonisolated private static func stableHash(_ string: String) -> String {

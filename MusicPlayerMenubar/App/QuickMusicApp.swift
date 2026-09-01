@@ -45,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         library.loadCustomFolders()
         library.loadLibrary()
 
+        ArtworkCache.shared.pruneDiskCache()
+
         cancellable = player.$isPlaying.receive(on: RunLoop.main).sink { [weak self] isPlaying in
             guard let button = self?.statusItem.button else { return }
             button.image = Self.menubarIcon(playing: isPlaying)
