@@ -37,6 +37,8 @@ xcodebuild -scheme "$SCHEME" \
 	-derivedDataPath "$BUILD" \
 	-arch arm64 -arch x86_64 \
 	ONLY_ACTIVE_ARCH=NO \
+	MARKETING_VERSION="$VERSION" \
+	CURRENT_PROJECT_VERSION="$VERSION" \
 	CODE_SIGN_IDENTITY="" \
 	CODE_SIGNING_REQUIRED=NO \
 	CODE_SIGNING_ALLOWED=NO \
@@ -45,6 +47,15 @@ xcodebuild -scheme "$SCHEME" \
 
 echo "==> Architectures"
 lipo -info "$APP/Contents/MacOS/$SCHEME"
+
+# The version is injected above rather than trusted from the project file,
+# which silently shipped 1.0 on every release up to 2.0.2. Assert it landed.
+BUILT_VERSION=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
+echo "==> Bundle version: $BUILT_VERSION"
+if [ "$BUILT_VERSION" != "$VERSION" ]; then
+	echo "error: bundle reports $BUILT_VERSION but $VERSION was requested" >&2
+	exit 1
+fi
 
 # Sign after building, so the entitlements file is applied exactly as written
 # rather than merged with whatever the build settings would have generated.

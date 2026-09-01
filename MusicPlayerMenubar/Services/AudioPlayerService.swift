@@ -233,18 +233,27 @@ final class AudioPlayerService: ObservableObject {
         }
     }
 
-    func playNext() {
+    /// Advances to the next track.
+    ///
+    /// Returns whether the queue resolved the request — either by starting
+    /// another track or by deliberately ending playback. `false` means the
+    /// queue could say nothing about what comes next, which the caller must
+    /// handle: leaving `isPlaying` set with no audio strands the UI showing a
+    /// pause button and a playing menubar icon over silence.
+    @discardableResult
+    func playNext() -> Bool {
         guard let current = currentTrack,
               !playlist.isEmpty,
               let index = playlist.firstIndex(where: { $0.id == current.id })
-        else { return }
+        else { return false }
 
         let nextIndex = (index + 1) % playlist.count
         if loopMode == .off && nextIndex == 0 {
             stop()
-            return
+            return true
         }
         play(track: playlist[nextIndex])
+        return true
     }
 
     func playPrevious() {
@@ -315,19 +324,38 @@ final class AudioPlayerService: ObservableObject {
     private func handlePlaybackEnd() {
         switch loopMode {
         case .one:
-            if let track = currentTrack {
-                play(track: track)
-            }
+            restartCurrentItem()
         case .all:
-            playNext()
+            if !playNext() { stop() }
         case .off:
             let autoPlay = UserDefaults.standard.object(forKey: "autoPlayNext") as? Bool ?? true
             if autoPlay {
-                playNext()
+                if !playNext() { stop() }
             } else {
                 stop()
             }
         }
+    }
+
+    /// Rewinds and replays the current item for loop-one.
+    ///
+    /// Calling `play(track:)` here tore the item down and built a new one on
+    /// every repeat — reopening the file, re-registering observers and
+    /// re-running the duration load once per loop. Seeking to zero keeps the
+    /// already-open item and costs nothing per iteration.
+    private func restartCurrentItem() {
+        guard let player, playerItem != nil else {
+            // Item was released (idle) — fall back to a full start.
+            if let track = currentTrack { play(track: track) }
+            return
+        }
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+        player.play()
+        isPlaying = true
+        savedPosition = 0
+        progress = 0
+        currentTime = 0
+        updateNowPlayingInfo()
     }
 
     private func cleanupItem() {

@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
         let settingsView = SettingsView()
             .environmentObject(library)
+            .environmentObject(player)
         let hostingView = NSHostingView(rootView: settingsView)
 
         let window = NSWindow(
