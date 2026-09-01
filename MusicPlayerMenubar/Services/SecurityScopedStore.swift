@@ -112,7 +112,15 @@ final class SecurityScopedStore {
     }
 
     func removeRoot(_ url: URL) {
-        guard let index = entries.firstIndex(where: { $0.url == url }) else { return }
+        // Compare standardized paths, not URLs. `URL(fileURLWithPath:)` only
+        // appends the directory slash when it can stat the path, so a caller
+        // rebuilding a URL for a folder that has gone away (unplugged drive)
+        // produces a value that `==` won't match — leaving a bookmark that can
+        // never be removed. `isCovered` already compares this way.
+        let target = url.standardizedFileURL.path
+        guard let index = entries.firstIndex(
+            where: { $0.url.standardizedFileURL.path == target }
+        ) else { return }
         let entry = entries[index]
         if entry.isAccessing {
             entry.url.stopAccessingSecurityScopedResource()

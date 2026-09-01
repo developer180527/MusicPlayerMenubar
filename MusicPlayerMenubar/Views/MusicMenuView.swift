@@ -303,12 +303,17 @@ struct MusicMenuView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
+                    // Resolve the filter once per render. `filteredTracks` is
+                    // computed, so reading it inside the row body reran the
+                    // whole fuzzy search for every row that materialized.
+                    let tracks = filteredTracks
+                    let lastID = tracks.last?.id
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(filteredTracks) { track in
+                            ForEach(tracks) { track in
                                 trackRow(track)
                                     .id(track.id)
-                                if track.id != filteredTracks.last?.id {
+                                if track.id != lastID {
                                     Divider()
                                 }
                             }
@@ -365,6 +370,7 @@ struct MusicMenuView: View {
 
             Button {
                 library.removeTrack(track)
+                player.dropFromQueue(track)
                 if player.currentTrack?.id == track.id {
                     player.stop()
                 }
@@ -486,6 +492,7 @@ struct MusicMenuView: View {
             player.stop()
         }
         library.removeTrack(track)
+        player.dropFromQueue(track)
         selectedTrackID = nextID
     }
 

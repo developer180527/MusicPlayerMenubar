@@ -46,7 +46,10 @@ final class AudioPlayerService: ObservableObject {
     private var statusObserver: NSKeyValueObservation?
     private var playlist: [Track] = []
     private var commandsConfigured = false
+    /// Track whose artwork load has been started (dedup guard).
     private var currentArtworkURL: URL?
+    /// Track whose artwork is actually installed in the Now Playing entry.
+    private var installedArtworkURL: URL?
     private var idleTimer: Timer?
     private var savedPosition: Double = 0
     private static let idleTimeout: TimeInterval = 120
@@ -84,6 +87,11 @@ final class AudioPlayerService: ObservableObject {
         isPlaying = true
         duration = track.duration
         savedPosition = 0
+        // Without this the scrubber keeps the previous track's position until
+        // the first observer tick, up to half a second of showing the wrong
+        // elapsed time against the new title.
+        progress = 0
+        currentTime = 0
         if !playlist.isEmpty {
             self.playlist = playlist
         }
@@ -91,6 +99,10 @@ final class AudioPlayerService: ObservableObject {
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
             Task { @MainActor in
                 guard let self else { return }
+                // The callback hops to the main actor, so the user may have
+                // moved on by the time it runs. Failing an item we already
+                // replaced must not stop whatever is playing now.
+                guard self.playerItem === item else { return }
                 self.statusObserver = nil
                 if observed.status == .failed {
                     self.showError("Can't play: \(track.title)")
@@ -100,9 +112,13 @@ final class AudioPlayerService: ObservableObject {
         }
 
         Task {
-            if let dur = try? await item.asset.load(.duration),
-               dur.seconds.isFinite && dur.seconds > 0 {
-                self.duration = dur.seconds
+            let loaded = try? await item.asset.load(.duration)
+            // Switching tracks quickly leaves this load in flight; publishing it
+            // would stamp the previous track's length onto the current one and
+            // skew the scrubber and every seek computed from it.
+            guard self.playerItem === item else { return }
+            if let loaded, loaded.seconds.isFinite, loaded.seconds > 0 {
+                self.duration = loaded.seconds
                 self.updateNowPlayingInfo()
             }
         }
@@ -172,10 +188,17 @@ final class AudioPlayerService: ObservableObject {
         currentTime = 0
         duration = 0
         savedPosition = 0
+        // playNext/playPrevious both require a currentTrack, so the queue is
+        // unreachable once stopped — and holding it pins every Track in the
+        // last playlist, which is the entire library in the common case.
+        playlist = []
         clearNowPlayingInfo()
     }
 
     func seek(to progress: Double) {
+        // Nothing meaningful to seek within a zero-length or unknown track, and
+        // a non-finite duration would produce an invalid CMTime.
+        guard duration.isFinite, duration > 0, progress.isFinite else { return }
         let targetTime = duration * progress
         self.progress = progress
         self.currentTime = targetTime
@@ -191,6 +214,15 @@ final class AudioPlayerService: ObservableObject {
     func setVolume(_ newVolume: Float) {
         volume = newVolume
         player?.volume = newVolume
+    }
+
+    /// Drops a track from the pending queue.
+    ///
+    /// The queue is a snapshot taken when playback started, so deleting a track
+    /// from the library otherwise leaves it there and playback walks into a
+    /// file that no longer exists.
+    func dropFromQueue(_ track: Track) {
+        playlist.removeAll { $0.id == track.id }
     }
 
     func cycleLoopMode() {
@@ -345,6 +377,7 @@ final class AudioPlayerService: ObservableObject {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
         currentArtworkURL = nil
+        installedArtworkURL = nil
 
         ArtworkCache.shared.trimCache()
     }
@@ -412,7 +445,12 @@ final class AudioPlayerService: ObservableObject {
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
 
-        if let existing = MPNowPlayingInfoCenter.default().nowPlayingInfo,
+        // Carry the artwork across the rebuilds that pause/seek trigger, but
+        // only while it still belongs to this track. Copying it unconditionally
+        // pinned the previous track's cover onto the new one — and left it
+        // there for good when the new track had no artwork of its own.
+        if installedArtworkURL == track.url,
+           let existing = MPNowPlayingInfoCenter.default().nowPlayingInfo,
            let artwork = existing[MPMediaItemPropertyArtwork] {
             info[MPMediaItemPropertyArtwork] = artwork
         }
@@ -427,6 +465,7 @@ final class AudioPlayerService: ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         currentArtworkURL = nil
+        installedArtworkURL = nil
     }
 
     private func loadNowPlayingArtwork(for track: Track) {
@@ -434,13 +473,22 @@ final class AudioPlayerService: ObservableObject {
         currentArtworkURL = track.url
 
         Task {
-            guard let image = await ArtworkCache.shared.loadThumbnail(for: track, size: 150)
-            else { return }
+            let image = await ArtworkCache.shared.loadThumbnail(for: track, size: 150)
             guard self.currentTrack?.url == track.url,
                   var info = MPNowPlayingInfoCenter.default().nowPlayingInfo
             else { return }
-            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            info[MPMediaItemPropertyArtwork] = artwork
+
+            if let image {
+                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
+                    boundsSize: image.size
+                ) { _ in image }
+                self.installedArtworkURL = track.url
+            } else {
+                // No cover for this track: clear the slot rather than leaving
+                // whatever was there before.
+                info[MPMediaItemPropertyArtwork] = nil
+                self.installedArtworkURL = nil
+            }
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         }
     }

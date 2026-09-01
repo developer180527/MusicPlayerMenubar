@@ -64,7 +64,10 @@ final class MusicLibraryService: ObservableObject {
             let data = try JSONEncoder().encode(tracks)
             try data.write(to: Self.storageURL, options: .atomic)
         } catch {
+            // A silent failure here means every change since launch is lost on
+            // quit, with nothing on screen to say so. Surface it.
             print("Failed to save library: \(error.localizedDescription)")
+            showStatus("Couldn't save library — changes may be lost")
         }
     }
 
@@ -206,10 +209,24 @@ final class MusicLibraryService: ObservableObject {
         return results
     }
 
-    private func importURLs(_ urls: [URL]) {
-        let existingURLs = Set(tracks.map { $0.url })
-        let extensions = supportedExtensions
+    /// How many files may be read for metadata at once.
+    ///
+    /// Each extraction holds an open `AVURLAsset` while it awaits. Adding a
+    /// task per file let a large folder keep thousands of assets alive at once,
+    /// spiking memory and file descriptors on exactly the imports where it
+    /// hurts most.
+    private static let metadataConcurrency = 8
 
+    private func importURLs(_ urls: [URL]) {
+        // A second import running concurrently would snapshot the same
+        // existing-URL set and append the same files again. Duplicate ids in
+        // the library break ForEach, which requires them to be unique.
+        guard !isScanning else {
+            showStatus("Already scanning")
+            return
+        }
+
+        let extensions = supportedExtensions
         isScanning = true
 
         Task {
@@ -217,6 +234,8 @@ final class MusicLibraryService: ObservableObject {
                 Self.audioFiles(in: urls, matching: extensions)
             }.value
 
+            // Re-read after the scan: tracks may have changed while it ran.
+            let existingURLs = Set(tracks.map { $0.url })
             let newURLs = fileURLs.filter { !existingURLs.contains($0) }
 
             guard !newURLs.isEmpty else {
@@ -229,19 +248,30 @@ final class MusicLibraryService: ObservableObject {
                 of: Track.self,
                 returning: [Track].self
             ) { group in
-                for url in newURLs {
-                    group.addTask {
-                        await MetadataService.extractMetadata(from: url)
-                    }
-                }
                 var results: [Track] = []
-                for await track in group {
+                results.reserveCapacity(newURLs.count)
+                var next = 0
+
+                func addNext() {
+                    guard next < newURLs.count else { return }
+                    let url = newURLs[next]
+                    next += 1
+                    group.addTask { await MetadataService.extractMetadata(from: url) }
+                }
+
+                // Keep a fixed number in flight, topping up as each finishes.
+                for _ in 0..<min(Self.metadataConcurrency, newURLs.count) { addNext() }
+                while let track = await group.next() {
                     results.append(track)
+                    addNext()
                 }
                 return results
             }
 
-            tracks.append(contentsOf: loaded)
+            // Guard once more: a removal during extraction could reintroduce a
+            // track the user just deleted.
+            let present = Set(tracks.map { $0.url })
+            tracks.append(contentsOf: loaded.filter { !present.contains($0.url) })
             tracks.sort {
                 $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             }
