@@ -1,8 +1,15 @@
 import Foundation
-import AppKit
 import Combine
-import UniformTypeIdentifiers
 
+/// The track collection and its persistence.
+///
+/// Split across sibling files:
+///
+/// - `+Import`: open panels, directory walking, metadata extraction
+/// - `+Folders`: the scan folders shown in Settings
+///
+/// Members those files reach cannot be `private`, which Swift scopes to a
+/// single file.
 @MainActor
 final class MusicLibraryService: ObservableObject {
 
@@ -22,7 +29,7 @@ final class MusicLibraryService: ObservableObject {
     private var statusGeneration = 0
     private var removalGeneration = 0
 
-    private let supportedExtensions: Set<String> = [
+    let supportedExtensions: Set<String> = [
         "mp3", "m4a", "aac", "wav", "flac", "aiff", "alac"
     ]
 
@@ -64,7 +71,7 @@ final class MusicLibraryService: ObservableObject {
         }
     }
 
-    private func save() {
+    func save() {
         do {
             let data = try JSONEncoder().encode(tracks)
             try data.write(to: Self.storageURL, options: .atomic)
@@ -73,216 +80,6 @@ final class MusicLibraryService: ObservableObject {
             // quit, with nothing on screen to say so. Surface it.
             print("Failed to save library: \(error.localizedDescription)")
             showStatus("Couldn't save library — changes may be lost")
-        }
-    }
-
-    // MARK: - Add
-
-    func addFiles() {
-        NSApp.activate(ignoringOtherApps: true)
-
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
-        panel.message = "Select music files or folders"
-        panel.level = .floating
-
-        guard panel.runModal() == .OK else { return }
-
-        // The panel grant only lasts for this launch; bookmark it so the files
-        // are still reachable next time.
-        var ungranted = 0
-        for url in panel.urls where !SecurityScopedStore.shared.addRoot(url) {
-            ungranted += 1
-        }
-        if ungranted > 0 {
-            showStatus("\(ungranted) item\(ungranted == 1 ? "" : "s") can't be saved for next launch")
-        }
-
-        importURLs(panel.urls)
-    }
-
-    // MARK: - Custom Folders
-
-    private static let foldersKey = "customScanFolders"
-
-    /// Scan folders are the subset of granted roots the user designated for
-    /// rescanning. The stored paths are only an index — the authority to open
-    /// them comes from the bookmark `SecurityScopedStore` holds.
-    func loadCustomFolders() {
-        let paths = UserDefaults.standard.stringArray(forKey: Self.foldersKey) ?? []
-        let store = SecurityScopedStore.shared
-        customFolders = paths
-            .map { URL(fileURLWithPath: $0) }
-            .filter { store.isCovered($0) }
-
-        // A folder whose bookmark no longer resolves can never be scanned, so
-        // drop it instead of leaving a dead row in Settings.
-        if customFolders.count != paths.count {
-            saveCustomFolders()
-        }
-    }
-
-    func addCustomFolder() {
-        NSApp.activate(ignoringOtherApps: true)
-
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = true
-        panel.message = "Select folders to scan for music"
-        panel.level = .floating
-
-        guard panel.runModal() == .OK else { return }
-
-        let existing = Set(customFolders.map { $0.path })
-        var newFolders: [URL] = []
-        var ungranted = 0
-        for url in panel.urls where !existing.contains(url.path) {
-            if SecurityScopedStore.shared.addRoot(url) {
-                newFolders.append(url)
-            } else {
-                ungranted += 1
-            }
-        }
-
-        if ungranted > 0 {
-            showStatus("\(ungranted) folder\(ungranted == 1 ? "" : "s") couldn't be added")
-        }
-        guard !newFolders.isEmpty else { return }
-        customFolders.append(contentsOf: newFolders)
-        saveCustomFolders()
-    }
-
-    func removeCustomFolder(_ folder: URL) {
-        customFolders.removeAll { $0 == folder }
-        saveCustomFolders()
-
-        // Keep the underlying grant when tracks still live inside this folder.
-        // Removing it from the scan list shouldn't make those tracks unplayable.
-        let prefix = folder.standardizedFileURL.path + "/"
-        let stillNeeded = tracks.contains {
-            $0.url.standardizedFileURL.path.hasPrefix(prefix)
-        }
-        if !stillNeeded {
-            SecurityScopedStore.shared.removeRoot(folder)
-        }
-    }
-
-    func scanCustomFolders() {
-        let valid = customFolders.filter { (try? $0.checkResourceIsReachable()) == true }
-        guard !valid.isEmpty else {
-            showStatus("No valid folders to scan")
-            return
-        }
-        importURLs(valid)
-    }
-
-    private func saveCustomFolders() {
-        let paths = customFolders.map { $0.path }
-        UserDefaults.standard.set(paths, forKey: Self.foldersKey)
-    }
-
-    /// Walks `urls` (recursing into directories) for files with a supported
-    /// extension. Kept synchronous: NSEnumerator's iterator can't be used from
-    /// an async context.
-    nonisolated private static func audioFiles(
-        in urls: [URL],
-        matching extensions: Set<String>
-    ) -> [URL] {
-        var results: [URL] = []
-        for url in urls {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-               isDir.boolValue {
-                guard let enumerator = FileManager.default.enumerator(
-                    at: url,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                ) else { continue }
-                for case let fileURL as URL in enumerator {
-                    if extensions.contains(fileURL.pathExtension.lowercased()) {
-                        results.append(fileURL)
-                    }
-                }
-            } else if extensions.contains(url.pathExtension.lowercased()) {
-                results.append(url)
-            }
-        }
-        return results
-    }
-
-    /// How many files may be read for metadata at once.
-    ///
-    /// Each extraction holds an open `AVURLAsset` while it awaits. Adding a
-    /// task per file let a large folder keep thousands of assets alive at once,
-    /// spiking memory and file descriptors on exactly the imports where it
-    /// hurts most.
-    private static let metadataConcurrency = 8
-
-    private func importURLs(_ urls: [URL]) {
-        // A second import running concurrently would snapshot the same
-        // existing-URL set and append the same files again. Duplicate ids in
-        // the library break ForEach, which requires them to be unique.
-        guard !isScanning else {
-            showStatus("Already scanning")
-            return
-        }
-
-        let extensions = supportedExtensions
-        isScanning = true
-
-        Task {
-            let fileURLs = await Task.detached(priority: .userInitiated) {
-                Self.audioFiles(in: urls, matching: extensions)
-            }.value
-
-            // Re-read after the scan: tracks may have changed while it ran.
-            let existingURLs = Set(tracks.map { $0.url })
-            let newURLs = fileURLs.filter { !existingURLs.contains($0) }
-
-            guard !newURLs.isEmpty else {
-                isScanning = false
-                showStatus("No new tracks found")
-                return
-            }
-
-            let loaded = await withTaskGroup(
-                of: Track.self,
-                returning: [Track].self
-            ) { group in
-                var results: [Track] = []
-                results.reserveCapacity(newURLs.count)
-                var next = 0
-
-                func addNext() {
-                    guard next < newURLs.count else { return }
-                    let url = newURLs[next]
-                    next += 1
-                    group.addTask { await MetadataService.extractMetadata(from: url) }
-                }
-
-                // Keep a fixed number in flight, topping up as each finishes.
-                for _ in 0..<min(Self.metadataConcurrency, newURLs.count) { addNext() }
-                while let track = await group.next() {
-                    results.append(track)
-                    addNext()
-                }
-                return results
-            }
-
-            // Guard once more: a removal during extraction could reintroduce a
-            // track the user just deleted.
-            let present = Set(tracks.map { $0.url })
-            tracks.append(contentsOf: loaded.filter { !present.contains($0.url) })
-            tracks.sort {
-                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
-            }
-            isScanning = false
-            save()
-            showStatus("Added \(loaded.count) track\(loaded.count == 1 ? "" : "s")")
         }
     }
 
@@ -333,7 +130,7 @@ final class MusicLibraryService: ObservableObject {
 
     // MARK: - Status
 
-    private func showStatus(_ message: String) {
+    func showStatus(_ message: String) {
         statusMessage = message
         // Same reasoning as the undo banner: comparing the text would let an
         // earlier timer retire a repeat of the same message early.
