@@ -37,18 +37,12 @@ extension MusicLibraryService {
         guard panel.runModal() == .OK else { return }
 
         let existing = Set(customFolders.map { $0.path })
-        var newFolders: [URL] = []
-        var ungranted = 0
-        for url in panel.urls where !existing.contains(url.path) {
-            if SecurityScopedStore.shared.addRoot(url) {
-                newFolders.append(url)
-            } else {
-                ungranted += 1
-            }
-        }
+        let candidates = panel.urls.filter { !existing.contains($0.path) }
+        let failed = Set(SecurityScopedStore.shared.addRoots(candidates).map { $0.path })
+        let newFolders = candidates.filter { !failed.contains($0.path) }
 
-        if ungranted > 0 {
-            showStatus("\(ungranted) folder\(ungranted == 1 ? "" : "s") couldn't be added")
+        if !failed.isEmpty {
+            showStatus("\(failed.count) folder\(failed.count == 1 ? "" : "s") couldn't be added")
         }
         guard !newFolders.isEmpty else { return }
         customFolders.append(contentsOf: newFolders)

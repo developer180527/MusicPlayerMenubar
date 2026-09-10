@@ -103,12 +103,43 @@ final class SecurityScopedStore {
     /// grant cannot be persisted across launches.
     @discardableResult
     func addRoot(_ url: URL) -> Bool {
-        // Already reachable through a root we hold — nothing to store.
-        if isCovered(url) { return true }
+        addRoots([url]).isEmpty
+    }
 
-        let bookmark: Data
+    /// Records access to several URLs, writing storage once.
+    ///
+    /// Returns the URLs that could not be bookmarked.
+    ///
+    /// Granting per file is fully supported — a file root simply covers itself
+    /// — but each one costs a bookmark to store and to resolve at launch, so a
+    /// large selection is meaningfully heavier than granting the folder once.
+    @discardableResult
+    func addRoots(_ urls: [URL]) -> [URL] {
+        var failures: [URL] = []
+        var changed = false
+
+        for url in urls {
+            // Already reachable through a root we hold — nothing to store.
+            if isCovered(url) { continue }
+            guard let bookmark = bookmark(for: url) else {
+                failures.append(url)
+                continue
+            }
+            let opened = url.startAccessingSecurityScopedResource()
+            entries.append(Root(url: url, bookmark: bookmark, isAccessing: opened))
+            changed = true
+        }
+
+        // One write for the whole selection. Persisting per URL rewrote the
+        // entire growing array once per file, which turned picking a few
+        // hundred tracks into megabytes of redundant writes.
+        if changed { persist() }
+        return failures
+    }
+
+    private func bookmark(for url: URL) -> Data? {
         do {
-            bookmark = try Self.makeBookmark(for: url)
+            return try Self.makeBookmark(for: url)
         } catch {
             // This shipped broken once because `try?` hid the reason: the
             // com.apple.security.files.bookmarks.app-scope entitlement was
@@ -118,13 +149,8 @@ final class SecurityScopedStore {
             // stdout does not reliably reach the unified log, which is why the
             // first attempt at this diagnostic produced nothing to read.
             Self.log.error("bookmark failed for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return false
+            return nil
         }
-
-        let opened = url.startAccessingSecurityScopedResource()
-        entries.append(Root(url: url, bookmark: bookmark, isAccessing: opened))
-        persist()
-        return true
     }
 
     func removeRoot(_ url: URL) {

@@ -22,11 +22,12 @@ extension MusicLibraryService {
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
         // The sandbox grants access to exactly what is selected and nothing
-        // else, so picking a folder is what buys lasting access to everything
-        // inside it — including files added later. Picking individual files
-        // grants only those files.
-        panel.message = "Choose the folder your music is in. "
-            + "Selecting the folder keeps access to everything inside it."
+        // else. Both choices are legitimate: a folder covers everything inside
+        // it including files added later, while individual files keep the grant
+        // narrow. Say so rather than pushing one, since narrowing access is a
+        // reasonable thing to want.
+        panel.message = "Choose a folder to keep access to everything inside it, "
+            + "or select individual files to grant access to only those."
         panel.prompt = "Grant Access"
         // Open where the library already points, so restoring access after the
         // grant is lost is a single confirmation.
@@ -39,10 +40,7 @@ extension MusicLibraryService {
 
         // The panel's grant lasts only for this launch; bookmark it so the
         // files are still reachable next time.
-        var ungranted = 0
-        for url in panel.urls where !SecurityScopedStore.shared.addRoot(url) {
-            ungranted += 1
-        }
+        let ungranted = SecurityScopedStore.shared.addRoots(panel.urls).count
         if ungranted > 0 {
             showStatus("\(ungranted) item\(ungranted == 1 ? "" : "s") can't be saved for next launch")
         }
