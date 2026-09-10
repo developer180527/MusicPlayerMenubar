@@ -39,7 +39,7 @@ extension AudioPlayerService {
                     if SecurityScopedStore.shared.isCovered(track.url) {
                         self.showError("Can't play: \(track.title)")
                     } else {
-                        self.showError("No access to \(track.title) — re-add its folder")
+                        self.showError("No access — click Add Music and choose your music folder")
                     }
                     self.stop()
                 }

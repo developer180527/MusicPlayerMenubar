@@ -21,13 +21,24 @@ extension MusicLibraryService {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.audio, .mp3, .mpeg4Audio, .wav, .aiff]
-        panel.message = "Select music files or folders"
+        // The sandbox grants access to exactly what is selected and nothing
+        // else, so picking a folder is what buys lasting access to everything
+        // inside it — including files added later. Picking individual files
+        // grants only those files.
+        panel.message = "Choose the folder your music is in. "
+            + "Selecting the folder keeps access to everything inside it."
+        panel.prompt = "Grant Access"
+        // Open where the library already points, so restoring access after the
+        // grant is lost is a single confirmation.
+        if let suggestion = musicFolderSuggestion {
+            panel.directoryURL = suggestion
+        }
         panel.level = .floating
 
         guard panel.runModal() == .OK else { return }
 
-        // The panel grant only lasts for this launch; bookmark it so the files
-        // are still reachable next time.
+        // The panel's grant lasts only for this launch; bookmark it so the
+        // files are still reachable next time.
         var ungranted = 0
         for url in panel.urls where !SecurityScopedStore.shared.addRoot(url) {
             ungranted += 1
@@ -37,6 +48,29 @@ extension MusicLibraryService {
         }
 
         importURLs(panel.urls)
+    }
+
+    /// The deepest folder containing every track already in the library.
+    ///
+    /// Used to open the panel where the music actually is, so re-granting after
+    /// a lost bookmark means confirming rather than navigating.
+    var musicFolderSuggestion: URL? {
+        guard let first = tracks.first else { return nil }
+        var common = first.url.deletingLastPathComponent().standardizedFileURL.pathComponents
+
+        for track in tracks.dropFirst() {
+            let parts = track.url.deletingLastPathComponent().standardizedFileURL.pathComponents
+            var shared = 0
+            while shared < min(common.count, parts.count), common[shared] == parts[shared] {
+                shared += 1
+            }
+            common = Array(common.prefix(shared))
+            // "/" alone is no use as a starting point.
+            if common.count <= 2 { return nil }
+        }
+
+        guard common.count > 2 else { return nil }
+        return URL(fileURLWithPath: NSString.path(withComponents: common), isDirectory: true)
     }
 
     /// Walks `urls` (recursing into directories) for files with a supported

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Persists security-scoped bookmarks for the folders and files the user has
 /// explicitly granted access to.
@@ -20,6 +21,8 @@ final class SecurityScopedStore {
     static let shared = SecurityScopedStore()
 
     private static let bookmarksKey = "securityScopedBookmarks"
+
+    static let log = Logger(subsystem: "developer180527.MusicPlayerMenubar", category: "access")
 
     private struct Root {
         let url: URL
@@ -110,8 +113,11 @@ final class SecurityScopedStore {
             // This shipped broken once because `try?` hid the reason: the
             // com.apple.security.files.bookmarks.app-scope entitlement was
             // missing, so every call threw and no grant ever survived a quit.
-            // Never discard the error again.
-            print("Failed to bookmark \(url.path): \(error)")
+            //
+            // Logged through os.Logger, not print: output from a GUI app's
+            // stdout does not reliably reach the unified log, which is why the
+            // first attempt at this diagnostic produced nothing to read.
+            Self.log.error("bookmark failed for \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
 
