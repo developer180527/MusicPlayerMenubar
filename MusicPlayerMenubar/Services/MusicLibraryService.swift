@@ -65,6 +65,11 @@ final class MusicLibraryService: ObservableObject {
             if removedCount > 0 {
                 save()
                 showStatus("\(removedCount) track\(removedCount == 1 ? "" : "s") removed — files not found")
+            } else if !valid.isEmpty, !valid.contains(where: { store.isCovered($0.url) }) {
+                // Tracks listed, but no grant covers any of them, so every one
+                // will fail to play. Say so on launch rather than letting the
+                // user discover it one track at a time.
+                showStatus("Music access was lost — use Add Music to restore it")
             }
         } catch {
             print("Failed to load library: \(error.localizedDescription)")

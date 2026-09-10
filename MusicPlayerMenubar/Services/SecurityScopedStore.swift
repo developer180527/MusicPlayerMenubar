@@ -103,7 +103,17 @@ final class SecurityScopedStore {
         // Already reachable through a root we hold — nothing to store.
         if isCovered(url) { return true }
 
-        guard let bookmark = try? Self.makeBookmark(for: url) else { return false }
+        let bookmark: Data
+        do {
+            bookmark = try Self.makeBookmark(for: url)
+        } catch {
+            // This shipped broken once because `try?` hid the reason: the
+            // com.apple.security.files.bookmarks.app-scope entitlement was
+            // missing, so every call threw and no grant ever survived a quit.
+            // Never discard the error again.
+            print("Failed to bookmark \(url.path): \(error)")
+            return false
+        }
 
         let opened = url.startAccessingSecurityScopedResource()
         entries.append(Root(url: url, bookmark: bookmark, isAccessing: opened))

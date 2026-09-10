@@ -33,7 +33,14 @@ extension AudioPlayerService {
                 guard self.playerItem === item else { return }
                 self.statusObserver = nil
                 if observed.status == .failed {
-                    self.showError("Can't play: \(track.title)")
+                    // Distinguish a lost sandbox grant from a bad file. The
+                    // first is recoverable by re-granting the folder, and
+                    // "Can't play" sent people looking at the wrong thing.
+                    if SecurityScopedStore.shared.isCovered(track.url) {
+                        self.showError("Can't play: \(track.title)")
+                    } else {
+                        self.showError("No access to \(track.title) — re-add its folder")
+                    }
                     self.stop()
                 }
             }
