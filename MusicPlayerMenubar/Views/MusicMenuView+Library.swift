@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // Search field, the track list, and the rows in it.
 extension MusicMenuView {
@@ -129,11 +130,7 @@ extension MusicMenuView {
             .buttonStyle(.plain)
 
             Button {
-                library.removeTrack(track)
-                player.dropFromQueue(track)
-                if player.currentTrack?.id == track.id {
-                    player.stop()
-                }
+                removeFromLibrary(track)
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 10))
@@ -147,6 +144,28 @@ extension MusicMenuView {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(trackBackground(track))
+        .contextMenu {
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([track.url])
+            }
+            Button("Play") {
+                player.play(track: track, playlist: filteredTracks)
+            }
+            Divider()
+            Button("Remove from Library", role: .destructive) {
+                removeFromLibrary(track)
+            }
+        }
+    }
+
+    /// The single removal path, shared by the trash button and the context
+    /// menu so the two can't drift apart.
+    private func removeFromLibrary(_ track: Track) {
+        library.removeTrack(track)
+        player.dropFromQueue(track)
+        if player.currentTrack?.id == track.id {
+            player.stop()
+        }
     }
 
     private func trackBackground(_ track: Track) -> Color {

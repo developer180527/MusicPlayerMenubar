@@ -1,0 +1,1 @@
+1. Need to make most played song counter and a button to align library to most player (top) to leas played (bottom), this will be in settings, showing list of top played songs with number of times playes arrenged in descending order. 
